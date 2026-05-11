@@ -22,11 +22,34 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
+      - name: Clean and setup
+        run: |
+          rm -rf android/
+          flutter clean
+
+      - name: Generate fresh Android
+        run: |
+          mkdir -p temp_flutter
+          cd temp_flutter
+          flutter create --platforms android gait_temp
+          cd ..
+          rm -rf android/
+          mv temp_flutter/gait_temp/android ./
+          rm -rf temp_flutter
+
+      - name: Fix Android config
+        run: |
+          # Update build.gradle
+          sed -i "s/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/" android/app/build.gradle
+          sed -i "s/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/" android/app/build.gradle
+
       - run: flutter pub get
 
-      - run: flutter build apk --debug
+      - run: flutter build apk --debug 2>&1
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          name: gait-detector-debug
+          name: gait-detector-apk
           path: build/app/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
