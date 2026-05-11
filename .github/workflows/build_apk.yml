@@ -22,16 +22,16 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
-      - name: Clean android
+      - name: Clean
         run: rm -rf android/ && flutter clean
 
-      - name: Generate Android project
-        run: flutter create --platforms android --org com.example --project-name gait_detector .
+      - name: Generate Android
+        run: flutter create --platforms android .
 
-      - name: Create build.gradle with compileSdkVersion
+      - name: Fix build.gradle immediately
         run: |
-          mkdir -p android/app/src/main
-          cat > android/app/build.gradle << 'GRADLE_EOF'
+          # Replace the entire build.gradle with a working version
+          cat > android/app/build.gradle << 'EOF'
           plugins {
               id "com.android.application"
               id "kotlin-android"
@@ -47,7 +47,7 @@ jobs:
 
           def flutterRoot = localProperties.getProperty('flutter.sdk')
           if (flutterRoot == null) {
-              throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+              throw new GradleException("Flutter SDK not found.")
           }
 
           def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
@@ -66,7 +66,7 @@ jobs:
 
           android {
               compileSdkVersion 34
-              ndkVersion flutter.ndkVersion
+              ndkVersion "25.1.8937393"
 
               compileOptions {
                   sourceCompatibility JavaVersion.VERSION_17
@@ -103,7 +103,7 @@ jobs:
           dependencies {
               implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
           }
-          GRADLE_EOF
+          EOF
 
       - run: flutter pub get
 
