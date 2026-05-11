@@ -22,92 +22,24 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
-      - name: Clean
-        run: rm -rf android/ && flutter clean
+      - run: rm -rf android/ && flutter clean
 
-      - name: Generate Android
-        run: flutter create --platforms android .
+      - run: flutter create --platforms android .
 
-      - name: Fix build.gradle immediately
+      - name: Fix build.gradle with sed
         run: |
-          # Replace the entire build.gradle with a working version
-          cat > android/app/build.gradle << 'EOF'
-          plugins {
-              id "com.android.application"
-              id "kotlin-android"
-          }
-
-          def localProperties = new Properties()
-          def localPropertiesFile = rootProject.file('local.properties')
-          if (localPropertiesFile.exists()) {
-              localPropertiesFile.withReader('UTF-8') { reader ->
-                  localProperties.load(reader)
-              }
-          }
-
-          def flutterRoot = localProperties.getProperty('flutter.sdk')
-          if (flutterRoot == null) {
-              throw new GradleException("Flutter SDK not found.")
-          }
-
-          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
-          if (flutterVersionCode == null) {
-              flutterVersionCode = '1'
-          }
-
-          def flutterVersionName = localProperties.getProperty('flutter.versionName')
-          if (flutterVersionName == null) {
-              flutterVersionName = '1.0'
-          }
-
-          apply plugin: 'com.android.application'
-          apply plugin: 'kotlin-android'
-          apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
-
-          android {
-              compileSdkVersion 34
-              ndkVersion "25.1.8937393"
-
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
-
-              sourceSets {
-                  main.java.srcDirs += 'src/main/kotlin'
-              }
-
-              defaultConfig {
-                  applicationId "com.example.gait_detector"
-                  minSdkVersion 21
-                  targetSdkVersion 34
-                  versionCode flutterVersionCode.toInteger()
-                  versionName flutterVersionName
-              }
-
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.debug
-                  }
-              }
-          }
-
-          flutter {
-              source = "../.."
-          }
-
-          dependencies {
-              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
-          }
-          EOF
+          # Add compileSdkVersion if missing
+          sed -i '/^android {/a\    compileSdkVersion = 34' android/app/build.gradle
+          
+          # Add ndkVersion if missing
+          sed -i '/compileSdkVersion/a\    ndkVersion = "25.1.8937393"' android/app/build.gradle
+          
+          # Display the result
+          cat android/app/build.gradle | head -30
 
       - run: flutter pub get
 
-      - run: flutter build apk --debug
+      - run: flutter build apk --debug --verbose
 
       - uses: actions/upload-artifact@v4
         with:
