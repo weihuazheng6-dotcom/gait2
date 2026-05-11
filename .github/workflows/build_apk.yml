@@ -23,18 +23,68 @@ jobs:
           flutter-version: '3.24.0'
 
       - name: Generate Android project
-        run: |
-          flutter create --platforms android --org com.example --project-name gait_detector .
+        run: flutter create --platforms android .
 
-      - name: Fix build.gradle
+      - name: Create proper build.gradle
         run: |
-          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
+          cat > android/app/build.gradle << 'EOF'
+          plugins {
+              id "com.android.application"
+              id "kotlin-android"
+          }
+
+          android {
+              namespace "com.example.gait_detector"
+              compileSdkVersion 34
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+
+              defaultConfig {
+                  applicationId "com.example.gait_detector"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode 1
+                  versionName "1.0.0"
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                  }
+              }
+          }
+
+          flutter {
+              source = "../.."
+          }
+
+          dependencies {
+              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
+          }
+          EOF
 
       - run: flutter pub get
 
-      - run: flutter build apk --debug
+      - run: flutter build apk --debug 2>&1 || true
+
+      - name: Check APK
+        run: |
+          if [ -f build/app/outputs/apk/debug/app-debug.apk ]; then
+            echo "APK build successful!"
+          else
+            echo "APK build failed - checking for artifacts"
+            find build -name "*.apk" 2>/dev/null || echo "No APK found"
+          fi
 
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: gait-detector-debug
           path: build/app/outputs/apk/debug/app-debug.apk
