@@ -22,34 +22,96 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
-      - name: Clean and setup
-        run: |
-          rm -rf android/
-          flutter clean
+      - name: Clean android
+        run: rm -rf android/ && flutter clean
 
-      - name: Generate fresh Android
-        run: |
-          mkdir -p temp_flutter
-          cd temp_flutter
-          flutter create --platforms android gait_temp
-          cd ..
-          rm -rf android/
-          mv temp_flutter/gait_temp/android ./
-          rm -rf temp_flutter
+      - name: Generate Android project
+        run: flutter create --platforms android --org com.example --project-name gait_detector .
 
-      - name: Fix Android config
+      - name: Create build.gradle with compileSdkVersion
         run: |
-          # Update build.gradle
-          sed -i "s/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/" android/app/build.gradle
-          sed -i "s/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/" android/app/build.gradle
+          mkdir -p android/app/src/main
+          cat > android/app/build.gradle << 'GRADLE_EOF'
+          plugins {
+              id "com.android.application"
+              id "kotlin-android"
+          }
+
+          def localProperties = new Properties()
+          def localPropertiesFile = rootProject.file('local.properties')
+          if (localPropertiesFile.exists()) {
+              localPropertiesFile.withReader('UTF-8') { reader ->
+                  localProperties.load(reader)
+              }
+          }
+
+          def flutterRoot = localProperties.getProperty('flutter.sdk')
+          if (flutterRoot == null) {
+              throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+          }
+
+          def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+          if (flutterVersionCode == null) {
+              flutterVersionCode = '1'
+          }
+
+          def flutterVersionName = localProperties.getProperty('flutter.versionName')
+          if (flutterVersionName == null) {
+              flutterVersionName = '1.0'
+          }
+
+          apply plugin: 'com.android.application'
+          apply plugin: 'kotlin-android'
+          apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
+
+          android {
+              compileSdkVersion 34
+              ndkVersion flutter.ndkVersion
+
+              compileOptions {
+                  sourceCompatibility JavaVersion.VERSION_17
+                  targetCompatibility JavaVersion.VERSION_17
+              }
+
+              kotlinOptions {
+                  jvmTarget = '17'
+              }
+
+              sourceSets {
+                  main.java.srcDirs += 'src/main/kotlin'
+              }
+
+              defaultConfig {
+                  applicationId "com.example.gait_detector"
+                  minSdkVersion 21
+                  targetSdkVersion 34
+                  versionCode flutterVersionCode.toInteger()
+                  versionName flutterVersionName
+              }
+
+              buildTypes {
+                  release {
+                      signingConfig signingConfigs.debug
+                  }
+              }
+          }
+
+          flutter {
+              source = "../.."
+          }
+
+          dependencies {
+              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
+          }
+          GRADLE_EOF
 
       - run: flutter pub get
 
-      - run: flutter build apk --debug 2>&1
+      - run: flutter build apk --debug
 
       - uses: actions/upload-artifact@v4
-        if: always()
         with:
           name: gait-detector-apk
           path: build/app/outputs/apk/debug/app-debug.apk
           if-no-files-found: warn
+          retention-days: 30
