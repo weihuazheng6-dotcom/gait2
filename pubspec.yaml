@@ -13,7 +13,7 @@ dependencies:
     sdk: flutter
 
   # BLE蓝牙通信
-  flutter_blue_plus: ^1.30.0
+  flutter_blue_plus: ^1.28.4
 
   # 权限管理
   permission_handler: ^11.0.0
