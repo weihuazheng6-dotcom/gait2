@@ -22,70 +22,12 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
-      - name: Generate Android project
-        run: flutter create --platforms android .
-
-      - name: Create proper build.gradle
-        run: |
-          cat > android/app/build.gradle << 'EOF'
-          plugins {
-              id "com.android.application"
-              id "kotlin-android"
-          }
-
-          android {
-              namespace "com.example.gait_detector"
-              compileSdkVersion 34
-
-              compileOptions {
-                  sourceCompatibility JavaVersion.VERSION_17
-                  targetCompatibility JavaVersion.VERSION_17
-              }
-
-              kotlinOptions {
-                  jvmTarget = '17'
-              }
-
-              defaultConfig {
-                  applicationId "com.example.gait_detector"
-                  minSdkVersion 21
-                  targetSdkVersion 34
-                  versionCode 1
-                  versionName "1.0.0"
-              }
-
-              buildTypes {
-                  release {
-                      signingConfig signingConfigs.debug
-                  }
-              }
-          }
-
-          flutter {
-              source = "../.."
-          }
-
-          dependencies {
-              implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:1.8.22"
-          }
-          EOF
-
       - run: flutter pub get
 
-      - run: flutter build apk --debug
+      - run: flutter build apk --debug --verbose
 
-      - name: Find APK
-        run: |
-          find . -name "*.apk" -type f
-          ls -la build/app/outputs/flutter_apk/ 2>/dev/null || true
-          ls -la build/app/outputs/apk/ 2>/dev/null || true
-
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: gait-detector-apk
-          path: |
-            build/app/outputs/flutter_apk/**/*.apk
-            build/app/outputs/apk/**/*.apk
-          if-no-files-found: ignore
-          retention-days: 30
+          name: gait-detector-debug-apk
+          path: build/app/outputs/apk/debug/app-debug.apk
+          if-no-files-found: warn
