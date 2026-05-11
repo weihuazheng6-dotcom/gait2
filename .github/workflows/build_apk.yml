@@ -72,20 +72,20 @@ jobs:
 
       - run: flutter pub get
 
-      - run: flutter build apk --debug 2>&1 || true
+      - run: flutter build apk --debug
 
-      - name: Check APK
+      - name: Find APK
         run: |
-          if [ -f build/app/outputs/apk/debug/app-debug.apk ]; then
-            echo "APK build successful!"
-          else
-            echo "APK build failed - checking for artifacts"
-            find build -name "*.apk" 2>/dev/null || echo "No APK found"
-          fi
+          find . -name "*.apk" -type f
+          ls -la build/app/outputs/flutter_apk/ 2>/dev/null || true
+          ls -la build/app/outputs/apk/ 2>/dev/null || true
 
-      - uses: actions/upload-artifact@v4
-        if: always()
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
-          name: gait-detector-debug
-          path: build/app/outputs/apk/debug/app-debug.apk
+          name: gait-detector-apk
+          path: |
+            build/app/outputs/flutter_apk/**/*.apk
+            build/app/outputs/apk/**/*.apk
+          if-no-files-found: ignore
           retention-days: 30
