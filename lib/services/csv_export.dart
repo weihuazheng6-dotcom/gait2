@@ -1,161 +1,133 @@
 import 'dart:io';
 import 'package:path_provider/path_provider.dart';
-import 'package:intl/intl.dart';
 import 'gait_data.dart';
+import 'package:intl/intl.dart';
 
+/// CSV 导出服务 - 确保数据完整性
 class CSVExportService {
-  static const String headerLine =
-      'timestamp,P_first_meta_R,P_Fifth_meta_R,P_heel_R,acc_x_R,acc_y_R,acc_z_R,ave_x_R,ave_y_R,ave_z_R,'
-      'ang_x_R,ang_y_R,ang_z_R,P_first_meta_L,P_Fifth_meta_L,P_heel_L,acc_x_L,acc_y_L,acc_z_L,'
-      'ave_x_L,ave_y_L,ave_z_L,ang_x_L,ang_y_L,ang_z_L,Label';
+  /// 导出步态数据到 CSV 文件（带错误检查）
+  static Future<File> exportToCSV(List<GaitDataRecord> records) async {
+    if (records.isEmpty) {
+      throw Exception('No data to export');
+    }
 
-  /// 导出数据为CSV文件
-  static Future<String?> exportToCSV(List<GaitDataRecord> records) async {
     try {
-      if (records.isEmpty) {
-        debugPrint('No records to export');
-        return null;
-      }
-
-      // 生成文件名
-      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      final filename = 'gait_data_$timestamp.csv';
-
-      // 获取存储路径
+      // 1. 获取应用文档目录
       final directory = await getApplicationDocumentsDirectory();
-      final filePath = '${directory.path}/$filename';
-
-      debugPrint('Exporting to: $filePath');
-
-      // 创建文件
+      final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
+      final fileName = 'gait_data_$timestamp.csv';
+      final filePath = '${directory.path}/$fileName';
       final file = File(filePath);
 
-      // 构建CSV内容
+      // 2. 创建 CSV 内容（使用 StringBuffer 优化性能）
       final buffer = StringBuffer();
-
-      // 写入表头
-      buffer.writeln(headerLine);
-
-      // 写入数据行
-      for (final record in records) {
-        final row = record.toCSVRow();
-        buffer.writeln(row.join(','));
-      }
-
-      // 写入文件
-      await file.writeAsString(buffer.toString());
-
-      debugPrint('Export successful: $filePath');
-      return filePath;
-    } catch (e) {
-      debugPrint('Error exporting to CSV: $e');
-      return null;
-    }
-  }
-
-  /// 获取默认文档目录路径
-  static Future<String> getDocumentPath() async {
-    final directory = await getApplicationDocumentsDirectory();
-    return directory.path;
-  }
-
-  /// 检查文件是否存在
-  static Future<bool> fileExists(String filePath) async {
-    final file = File(filePath);
-    return file.exists();
-  }
-
-  /// 获取文件大小（字节）
-  static Future<int> getFileSize(String filePath) async {
-    final file = File(filePath);
-    if (await file.exists()) {
-      return file.lengthSync();
-    }
-    return 0;
-  }
-
-  /// 删除文件
-  static Future<bool> deleteFile(String filePath) async {
-    try {
-      final file = File(filePath);
-      if (await file.exists()) {
-        await file.delete();
-        debugPrint('File deleted: $filePath');
-        return true;
-      }
-      return false;
-    } catch (e) {
-      debugPrint('Error deleting file: $e');
-      return false;
-    }
-  }
-
-  /// 读取CSV文件
-  static Future<List<GaitDataRecord>> readCSV(String filePath) async {
-    try {
-      final file = File(filePath);
-      if (!await file.exists()) {
-        debugPrint('File not found: $filePath');
-        return [];
-      }
-
-      final contents = await file.readAsString();
-      final lines = contents.split('\n');
-
-      final records = <GaitDataRecord>[];
-
-      // 跳过头行，开始读取数据
-      for (int i = 1; i < lines.length; i++) {
-        final line = lines[i].trim();
-        if (line.isEmpty) continue;
-
+      
+      // 写表头
+      buffer.writeln(GaitDataRecord.getCSVHeader());
+      
+      // 写数据行
+      int successCount = 0;
+      for (var i = 0; i < records.length; i++) {
         try {
-          final values = line.split(',');
-          if (values.length >= 26) {
-            final record = GaitDataRecord(
-              timestamp: values[0],
-              pFirstMetaR: double.tryParse(values[1]) ?? 0.0,
-              pFifthMetaR: double.tryParse(values[2]) ?? 0.0,
-              pHeelR: double.tryParse(values[3]) ?? 0.0,
-              accXR: double.tryParse(values[4]) ?? 0.0,
-              accYR: double.tryParse(values[5]) ?? 0.0,
-              accZR: double.tryParse(values[6]) ?? 0.0,
-              gyroXR: double.tryParse(values[7]) ?? 0.0,
-              gyroYR: double.tryParse(values[8]) ?? 0.0,
-              gyroZR: double.tryParse(values[9]) ?? 0.0,
-              rollR: double.tryParse(values[10]) ?? 0.0,
-              pitchR: double.tryParse(values[11]) ?? 0.0,
-              yawR: double.tryParse(values[12]) ?? 0.0,
-              pFirstMetaL: double.tryParse(values[13]) ?? 0.0,
-              pFifthMetaL: double.tryParse(values[14]) ?? 0.0,
-              pHeelL: double.tryParse(values[15]) ?? 0.0,
-              accXL: double.tryParse(values[16]) ?? 0.0,
-              accYL: double.tryParse(values[17]) ?? 0.0,
-              accZL: double.tryParse(values[18]) ?? 0.0,
-              gyroXL: double.tryParse(values[19]) ?? 0.0,
-              gyroYL: double.tryParse(values[20]) ?? 0.0,
-              gyroZL: double.tryParse(values[21]) ?? 0.0,
-              rollL: double.tryParse(values[22]) ?? 0.0,
-              pitchL: double.tryParse(values[23]) ?? 0.0,
-              yawL: double.tryParse(values[24]) ?? 0.0,
-              label: values[25],
-            );
-            records.add(record);
-          }
+          buffer.writeln(records[i].toCSVRow());
+          successCount++;
         } catch (e) {
-          debugPrint('Error parsing CSV line $i: $e');
+          print('Warning: Error processing record $i: $e');
         }
       }
 
-      debugPrint('Loaded ${records.length} records from CSV');
-      return records;
+      if (successCount == 0) {
+        throw Exception('Failed to process any records');
+      }
+
+      // 3. 写入文件
+      await file.writeAsString(buffer.toString(), encoding: utf8);
+      
+      // 4. 验证文件
+      final fileExists = await file.exists();
+      final fileSize = await file.length();
+      
+      if (!fileExists || fileSize == 0) {
+        throw Exception('File write failed or file is empty');
+      }
+
+      print('✓ CSV exported successfully');
+      print('  File: $filePath');
+      print('  Records: $successCount/${records.length}');
+      print('  Size: ${(fileSize / 1024).toStringAsFixed(2)} KB');
+      
+      return file;
     } catch (e) {
-      debugPrint('Error reading CSV: $e');
+      print('✗ Export failed: $e');
+      throw Exception('CSV export failed: $e');
+    }
+  }
+
+  /// 验证数据有效性
+  static bool validateRecord(GaitDataRecord record) {
+    // 检查数据范围（可选）
+    final pressureValid = 
+        record.rightP1 >= 0 && record.rightP5 >= 0 && record.rightPH >= 0 &&
+        record.leftP1 >= 0 && record.leftP5 >= 0 && record.leftPH >= 0;
+    
+    final accValid =
+        record.rightAccX.abs() <= 20 && record.rightAccY.abs() <= 20 && record.rightAccZ.abs() <= 20 &&
+        record.leftAccX.abs() <= 20 && record.leftAccY.abs() <= 20 && record.leftAccZ.abs() <= 20;
+    
+    return pressureValid && accValid;
+  }
+
+  /// 获取已导出的文件列表
+  static Future<List<File>> getExportedFiles() async {
+    try {
+      final directory = await getApplicationDocumentsDirectory();
+      final files = directory
+          .listSync()
+          .where((f) => f.path.contains('gait_data_') && f.path.endsWith('.csv'))
+          .map((f) => File(f.path))
+          .toList();
+      
+      // 按修改时间排序（最新的在前）
+      files.sort((a, b) => b.lastModifiedSync().compareTo(a.lastModifiedSync()));
+      
+      return files;
+    } catch (e) {
+      print('Error getting files: $e');
       return [];
     }
   }
-}
 
-void debugPrint(String message) {
-  print(message);
+  /// 获取文件详情
+  static Future<Map<String, dynamic>> getFileInfo(File file) async {
+    try {
+      final stat = await file.stat();
+      final content = await file.readAsString();
+      final lines = content.split('\n').where((l) => l.isNotEmpty).length;
+      
+      return {
+        'name': file.path.split('/').last,
+        'size': stat.size,
+        'modified': stat.modified,
+        'records': (lines - 1).max(0), // 减去表头
+        'path': file.path,
+      };
+    } catch (e) {
+      return {'error': e.toString()};
+    }
+  }
+
+  /// 删除旧文件（保留最近 10 个）
+  static Future<void> cleanupOldFiles() async {
+    try {
+      final files = await getExportedFiles();
+      if (files.length > 10) {
+        for (var i = 10; i < files.length; i++) {
+          await files[i].delete();
+          print('Deleted: ${files[i].path}');
+        }
+      }
+    } catch (e) {
+      print('Cleanup error: $e');
+    }
+  }
 }
