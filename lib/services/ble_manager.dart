@@ -1,264 +1,357 @@
-/// BLE Manager 中的关键代码片段
-/// 确保惯性传感器数据正确采集和处理
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_blue/flutter_blue.dart';
+import 'gait_data.dart';
+import 'csv_export.dart';
+import 'package:intl/intl.dart';
 
-// ============================================
-// 1. 在 BLE Manager 中添加这些变量
-// ============================================
+class BLEManager extends ChangeNotifier {
+  final FlutterBlue _flutterBlue = FlutterBlue.instance;
 
-// 当前数据缓存（确保左右脚数据对齐）
-IMUData? _currentLeftIMU;
-IMUData? _currentRightIMU;
-PressureData? _currentLeftPressure;
-PressureData? _currentRightPressure;
+  // 设备列表
+  List<BluetoothDevice> _availableDevices = [];
+  Map<String, BluetoothDevice> _connectedDevices = {};
 
-// 数据采集缓冲区
-final List<GaitDataRecord> _recordBuffer = [];
-final int _bufferSize = 1000; // 每 1000 条记录自动保存一次
+  // 数据缓存
+  IMUData? _currentLeftIMU;
+  IMUData? _currentRightIMU;
+  PressureData? _currentLeftPressure;
+  PressureData? _currentRightPressure;
 
-// ============================================
-// 2. IMU 数据 Notify 回调处理
-// ============================================
+  // 录制缓冲
+  final List<GaitDataRecord> _recordBuffer = [];
+  final int _bufferSize = 1000;
 
-void _handleIMUNotification(List<int> data, SensorRole role) {
-  try {
-    // 验证数据格式（维特传感器: 0x55 0x61 + 18字节数据）
-    if (data.length < 20) {
-      print('Warning: IMU frame too short (${data.length} bytes)');
-      return;
-    }
+  // 状态
+  bool _isScanning = false;
+  bool _isRecording = false;
+  Timer? _recordTimer;
+  int _currentLabel = 0;
 
-    // 检查帧头和标志位
-    if (data[0] != 0x55 || data[1] != 0x61) {
-      print('Warning: Invalid frame header: ${data[0]} ${data[1]}');
-      return;
-    }
+  // Getters
+  List<BluetoothDevice> get availableDevices => _availableDevices;
+  bool get isScanning => _isScanning;
+  bool get isRecording => _isRecording;
+  List<GaitDataRecord> get records => _recordBuffer;
+  int get bufferSize => _recordBuffer.length;
 
-    // 提取 18 字节的 IMU 数据（跳过帧头和标志位）
-    List<int> imuFrame = data.sublist(2, 20);
+  // ============================================
+  // 扫描设备
+  // ============================================
 
-    // 解析 IMU 数据
+  Future<void> startScan() async {
+    if (_isScanning) return;
+
+    _isScanning = true;
+    _availableDevices.clear();
+    notifyListeners();
+
     try {
+      _flutterBlue.startScan(timeout: Duration(seconds: 10));
+
+      _flutterBlue.scanResults.listen((results) {
+        for (ScanResult result in results) {
+          if (!_availableDevices.contains(result.device)) {
+            _availableDevices.add(result.device);
+            print('Found device: ${result.device.name} (${result.device.id})');
+          }
+        }
+        notifyListeners();
+      });
+    } catch (e) {
+      print('Scan error: $e');
+    }
+  }
+
+  Future<void> stopScan() async {
+    _isScanning = false;
+    await _flutterBlue.stopScan();
+    notifyListeners();
+  }
+
+  // ============================================
+  // 连接设备
+  // ============================================
+
+  Future<bool> connectDevice(BluetoothDevice device, SensorRole role) async {
+    try {
+      print('Connecting to ${device.name} as $role...');
+      await device.connect(timeout: Duration(seconds: 10));
+
+      _connectedDevices[device.id] = device;
+
+      // 订阅特性
+      _setupNotifications(device, role);
+
+      print('✓ Connected to ${device.name}');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('✗ Connection error: $e');
+      return false;
+    }
+  }
+
+  Future<void> disconnectDevice(String deviceId) async {
+    if (_connectedDevices.containsKey(deviceId)) {
+      try {
+        await _connectedDevices[deviceId]?.disconnect();
+        _connectedDevices.remove(deviceId);
+        print('✓ Disconnected');
+      } catch (e) {
+        print('Disconnect error: $e');
+      }
+    }
+    notifyListeners();
+  }
+
+  // ============================================
+  // 设置通知（蓝牙数据接收）
+  // ============================================
+
+  void _setupNotifications(BluetoothDevice device, SensorRole role) async {
+    try {
+      List<BluetoothService> services = await device.discoverServices();
+
+      for (BluetoothService service in services) {
+        print('Service: ${service.uuid}');
+
+        for (BluetoothCharacteristic characteristic in service.characteristics) {
+          print('  Characteristic: ${characteristic.uuid}');
+
+          // 订阅通知
+          try {
+            await characteristic.setNotifyValue(true);
+
+            characteristic.value.listen((value) {
+              _handleBluetoothData(value, role, characteristic.uuid.toString());
+            });
+          } catch (e) {
+            // 某些特性不支持通知
+          }
+        }
+      }
+    } catch (e) {
+      print('Setup notifications error: $e');
+    }
+  }
+
+  // ============================================
+  // 处理蓝牙数据
+  // ============================================
+
+  void _handleBluetoothData(List<int> data, SensorRole role, String uuid) {
+    try {
+      // 维特 IMU 传感器 (0x55 0x61 + 18字节)
+      if (data.length >= 20 && data[0] == 0x55 && data[1] == 0x61) {
+        _handleIMUData(data, role);
+      }
+      // JDY-10 压力传感器 (ASCII 字符串 "$P1,P2,P3")
+      else if (data.isNotEmpty && data[0] == 0x24) { // '$'
+        _handlePressureData(data, role);
+      }
+    } catch (e) {
+      print('Data handling error: $e');
+    }
+  }
+
+  // ============================================
+  // IMU 数据处理
+  // ============================================
+
+  void _handleIMUData(List<int> data, SensorRole role) {
+    try {
+      // 验证帧
+      if (data.length < 20) return;
+
+      // 提取 18 字节 IMU 数据
+      List<int> imuFrame = data.sublist(2, 20);
+
+      // 解析
       IMUData imuData = IMUData.parseFromFrame(imuFrame);
-      
-      // 更新对应脚的数据
+
+      // 更新
       if (role == SensorRole.leftFoot) {
         _currentLeftIMU = imuData;
-        print('✓ Left IMU: ${imuData.toString()}');
-      } else if (role == SensorRole.rightFoot) {
+        print('✓ Left IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
+            '${imuData.accY.toStringAsFixed(2)}, '
+            '${imuData.accZ.toStringAsFixed(2)})');
+      } else {
         _currentRightIMU = imuData;
-        print('✓ Right IMU: ${imuData.toString()}');
+        print('✓ Right IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
+            '${imuData.accY.toStringAsFixed(2)}, '
+            '${imuData.accZ.toStringAsFixed(2)})');
       }
 
       notifyListeners();
     } catch (e) {
-      print('✗ IMU parse error: $e');
+      print('IMU parse error: $e');
     }
-  } catch (e) {
-    print('✗ IMU notification error: $e');
-  }
-}
-
-// ============================================
-// 3. 压力数据 Notify 回调处理
-// ============================================
-
-void _handlePressureNotification(String data, SensorRole role) {
-  try {
-    // 解析压力数据（格式: "$P1,P2,P3,...")
-    if (!data.startsWith('\$')) {
-      return;
-    }
-
-    final values = data.substring(1).split(',');
-    if (values.length < 3) {
-      print('Warning: Invalid pressure data: $data');
-      return;
-    }
-
-    double p1 = double.tryParse(values[0]) ?? 0;
-    double p5 = double.tryParse(values[1]) ?? 0;
-    double ph = double.tryParse(values[2]) ?? 0;
-
-    PressureData pressure = PressureData(p1: p1, p5: p5, heel: ph);
-
-    if (role == SensorRole.leftFoot) {
-      _currentLeftPressure = pressure;
-      print('✓ Left Pressure: ${pressure.toString()}');
-    } else if (role == SensorRole.rightFoot) {
-      _currentRightPressure = pressure;
-      print('✓ Right Pressure: ${pressure.toString()}');
-    }
-
-    notifyListeners();
-  } catch (e) {
-    print('✗ Pressure parse error: $e');
-  }
-}
-
-// ============================================
-// 4. 创建 CSV 记录（关键！）
-// ============================================
-
-void _createAndBufferRecord() {
-  try {
-    // ⚠️ 重要：检查数据是否完整
-    if (_currentLeftIMU == null || _currentRightIMU == null ||
-        _currentLeftPressure == null || _currentRightPressure == null) {
-      print('⚠ Warning: Incomplete data - skipping record');
-      return;
-    }
-
-    // 创建记录
-    final record = GaitDataRecord(
-      timestamp: DateTime.now().toIso8601String(),
-      
-      // 右脚 (12 列)
-      rightP1: _currentRightPressure!.p1,
-      rightP5: _currentRightPressure!.p5,
-      rightPH: _currentRightPressure!.heel,
-      rightAccX: _currentRightIMU!.accX,
-      rightAccY: _currentRightIMU!.accY,
-      rightAccZ: _currentRightIMU!.accZ,
-      rightGyroX: _currentRightIMU!.gyroX,
-      rightGyroY: _currentRightIMU!.gyroY,
-      rightGyroZ: _currentRightIMU!.gyroZ,
-      rightRoll: _currentRightIMU!.roll,
-      rightPitch: _currentRightIMU!.pitch,
-      rightYaw: _currentRightIMU!.yaw,
-      
-      // 左脚 (12 列)
-      leftP1: _currentLeftPressure!.p1,
-      leftP5: _currentLeftPressure!.p5,
-      leftPH: _currentLeftPressure!.heel,
-      leftAccX: _currentLeftIMU!.accX,
-      leftAccY: _currentLeftIMU!.accY,
-      leftAccZ: _currentLeftIMU!.accZ,
-      leftGyroX: _currentLeftIMU!.gyroX,
-      leftGyroY: _currentLeftIMU!.gyroY,
-      leftGyroZ: _currentLeftIMU!.gyroZ,
-      leftRoll: _currentLeftIMU!.roll,
-      leftPitch: _currentLeftIMU!.pitch,
-      leftYaw: _currentLeftIMU!.yaw,
-      
-      // 标签
-      label: _currentLabel.toString(),
-    );
-
-    // 添加到缓冲区
-    _recordBuffer.add(record);
-    print('✓ Record added (total: ${_recordBuffer.length})');
-
-    // 自动保存（避免内存溢出）
-    if (_recordBuffer.length >= _bufferSize) {
-      _autoSaveBuffer();
-    }
-
-    notifyListeners();
-  } catch (e) {
-    print('✗ Record creation error: $e');
-  }
-}
-
-// ============================================
-// 5. 启动录制（定时创建记录）
-// ============================================
-
-Timer? _recordTimer;
-
-void startRecording() {
-  if (_recordTimer != null) {
-    print('⚠ Recording already started');
-    return;
   }
 
-  _recordBuffer.clear();
-  _isRecording = true;
+  // ============================================
+  // 压力数据处理
+  // ============================================
 
-  // 每 50ms 创建一条记录（20Hz 采样率）
-  _recordTimer = Timer.periodic(Duration(milliseconds: 50), (_) {
-    _createAndBufferRecord();
-  });
+  void _handlePressureData(List<int> data, SensorRole role) {
+    try {
+      // 转换为字符串
+      String str = String.fromCharCodes(data).trim();
 
-  print('✓ Recording started');
-  notifyListeners();
-}
+      if (!str.startsWith('\$')) return;
 
-void stopRecording() {
-  _recordTimer?.cancel();
-  _recordTimer = null;
-  _isRecording = false;
+      // 解析格式: "$P1,P2,P3"
+      String valueStr = str.substring(1);
+      List<String> values = valueStr.split(',');
 
-  print('✓ Recording stopped (${_recordBuffer.length} records)');
-  notifyListeners();
-}
+      if (values.length < 3) return;
 
-// ============================================
-// 6. 导出数据（确保不丢失）
-// ============================================
+      double p1 = double.tryParse(values[0]) ?? 0;
+      double p5 = double.tryParse(values[1]) ?? 0;
+      double ph = double.tryParse(values[2]) ?? 0;
 
-Future<void> exportRecords() async {
-  if (_recordBuffer.isEmpty) {
-    print('⚠ No data to export');
-    return;
+      PressureData pressure = PressureData(p1: p1, p5: p5, heel: ph);
+
+      if (role == SensorRole.leftFoot) {
+        _currentLeftPressure = pressure;
+        print('✓ Left Pressure: P1=$p1, P5=$p5, PH=$ph');
+      } else {
+        _currentRightPressure = pressure;
+        print('✓ Right Pressure: P1=$p1, P5=$p5, PH=$ph');
+      }
+
+      notifyListeners();
+    } catch (e) {
+      print('Pressure parse error: $e');
+    }
   }
 
-  try {
-    print('Starting export (${_recordBuffer.length} records)...');
-    
-    // 调用 CSV 导出服务
-    final file = await CSVExportService.exportToCSV(_recordBuffer);
-    
-    // 导出成功后清空缓冲区
+  // ============================================
+  // 录制方法
+  // ============================================
+
+  void startRecording() {
+    if (_isRecording) return;
+
     _recordBuffer.clear();
-    
-    print('✓ Export successful!');
-    print('  File: ${file.path}');
-    
+    _isRecording = true;
+
+    // 每 50ms 采样一次（20Hz）
+    _recordTimer = Timer.periodic(Duration(milliseconds: 50), (_) {
+      _createRecord();
+    });
+
+    print('✓ Recording started');
     notifyListeners();
-  } catch (e) {
-    print('✗ Export failed: $e');
   }
-}
 
-// ============================================
-// 7. 自动保存缓冲区（可选）
-// ============================================
+  void stopRecording() {
+    _recordTimer?.cancel();
+    _recordTimer = null;
+    _isRecording = false;
 
-Future<void> _autoSaveBuffer() async {
-  try {
-    if (_recordBuffer.isEmpty) return;
+    print('✓ Recording stopped (${_recordBuffer.length} records)');
+    notifyListeners();
+  }
 
-    print('Auto-saving buffer (${_recordBuffer.length} records)...');
-    
-    // 创建备份文件
-    final directory = await getApplicationDocumentsDirectory();
-    final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-    final backupFile = File('${directory.path}/backup_$timestamp.csv');
-    
-    final buffer = StringBuffer();
-    buffer.writeln(GaitDataRecord.getCSVHeader());
-    for (var record in _recordBuffer) {
-      buffer.writeln(record.toCSVRow());
+  // ============================================
+  // 创建记录
+  // ============================================
+
+  void _createRecord() {
+    // 检查数据完整性
+    if (_currentLeftIMU == null ||
+        _currentRightIMU == null ||
+        _currentLeftPressure == null ||
+        _currentRightPressure == null) {
+      return; // 数据不完整，跳过
     }
-    
-    await backupFile.writeAsString(buffer.toString());
-    print('✓ Backup saved: ${backupFile.path}');
-  } catch (e) {
-    print('✗ Auto-save error: $e');
+
+    try {
+      final record = GaitDataRecord(
+        timestamp: DateTime.now().toIso8601String(),
+
+        // 右脚
+        rightP1: _currentRightPressure!.p1,
+        rightP5: _currentRightPressure!.p5,
+        rightPH: _currentRightPressure!.heel,
+        rightAccX: _currentRightIMU!.accX,
+        rightAccY: _currentRightIMU!.accY,
+        rightAccZ: _currentRightIMU!.accZ,
+        rightGyroX: _currentRightIMU!.gyroX,
+        rightGyroY: _currentRightIMU!.gyroY,
+        rightGyroZ: _currentRightIMU!.gyroZ,
+        rightRoll: _currentRightIMU!.roll,
+        rightPitch: _currentRightIMU!.pitch,
+        rightYaw: _currentRightIMU!.yaw,
+
+        // 左脚
+        leftP1: _currentLeftPressure!.p1,
+        leftP5: _currentLeftPressure!.p5,
+        leftPH: _currentLeftPressure!.heel,
+        leftAccX: _currentLeftIMU!.accX,
+        leftAccY: _currentLeftIMU!.accY,
+        leftAccZ: _currentLeftIMU!.accZ,
+        leftGyroX: _currentLeftIMU!.gyroX,
+        leftGyroY: _currentLeftIMU!.gyroY,
+        leftGyroZ: _currentLeftIMU!.gyroZ,
+        leftRoll: _currentLeftIMU!.roll,
+        leftPitch: _currentLeftIMU!.pitch,
+        leftYaw: _currentLeftIMU!.yaw,
+
+        // 标签
+        label: _currentLabel.toString(),
+      );
+
+      _recordBuffer.add(record);
+      notifyListeners();
+    } catch (e) {
+      print('Record creation error: $e');
+    }
+  }
+
+  // ============================================
+  // 导出数据
+  // ============================================
+
+  Future<bool> exportRecords() async {
+    if (_recordBuffer.isEmpty) {
+      print('⚠ No data to export');
+      return false;
+    }
+
+    try {
+      print('Exporting ${_recordBuffer.length} records...');
+      final file = await CSVExportService.exportToCSV(_recordBuffer);
+      _recordBuffer.clear();
+      print('✓ Export successful: ${file.path}');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('✗ Export failed: $e');
+      return false;
+    }
+  }
+
+  // ============================================
+  // 辅助方法
+  // ============================================
+
+  void setLabel(int label) {
+    _currentLabel = label;
+    notifyListeners();
+  }
+
+  void printStatus() {
+    print('=== BLE Status ===');
+    print('Left IMU: ${_currentLeftIMU != null ? "✓" : "✗"}');
+    print('Right IMU: ${_currentRightIMU != null ? "✓" : "✗"}');
+    print('Left Pressure: ${_currentLeftPressure != null ? "✓" : "✗"}');
+    print('Right Pressure: ${_currentRightPressure != null ? "✓" : "✗"}');
+    print('Buffer: ${_recordBuffer.length}');
+    print('Recording: ${_isRecording ? "✓" : "✗"}');
+    print('==================');
   }
 }
 
-// ============================================
-// 8. 调试：打印当前数据状态
-// ============================================
-
-void printDataStatus() {
-  print('=== Data Status ===');
-  print('Left IMU: ${_currentLeftIMU != null ? "✓" : "✗"}');
-  print('Right IMU: ${_currentRightIMU != null ? "✓" : "✗"}');
-  print('Left Pressure: ${_currentLeftPressure != null ? "✓" : "✗"}');
-  print('Right Pressure: ${_currentRightPressure != null ? "✓" : "✗"}');
-  print('Buffer size: ${_recordBuffer.length}');
-  print('Recording: ${_isRecording ? "✓" : "✗"}');
-  print('===================');
-}
+enum SensorRole { leftFoot, rightFoot, unknown }
