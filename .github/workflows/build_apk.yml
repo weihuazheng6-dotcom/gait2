@@ -22,14 +22,13 @@ jobs:
         with:
           flutter-version: '3.24.0'
 
-      - name: Create Flutter Android project
+      - name: Generate Android project
         run: |
-          mkdir -p android_base
-          cd android_base
-          flutter create --platforms android temp_app
-          cd ..
-          cp -r android_base/temp_app/android ./android
-          rm -rf android_base
+          flutter create --platforms android --org com.example --project-name gait_detector .
+
+      - name: Fix build.gradle
+        run: |
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/' android/app/build.gradle
 
       - run: flutter pub get
 
