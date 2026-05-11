@@ -3,8 +3,6 @@ name: Build APK
 on:
   push:
     branches: [main]
-  pull_request:
-    branches: [main]
 
 jobs:
   build:
@@ -13,37 +11,30 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.24.0'
 
-      - run: rm -rf android/ && flutter clean
+      - run: flutter clean && rm -rf android/
 
-      - run: flutter create --platforms android .
+      - run: |
+          mkdir -p temp_project
+          cd temp_project
+          flutter create --platforms android test_app
+          cd ..
+          rm -rf android/
+          cp -r temp_project/test_app/android ./
+          rm -rf temp_project
 
-      - name: Fix build.gradle with sed
-        run: |
-          # Add compileSdkVersion if missing
-          sed -i '/^android {/a\    compileSdkVersion = 34' android/app/build.gradle
-          
-          # Add ndkVersion if missing
-          sed -i '/compileSdkVersion/a\    ndkVersion = "25.1.8937393"' android/app/build.gradle
-          
-          # Display the result
-          cat android/app/build.gradle | head -30
+      - run: |
+          sed -i 's/compileSdkVersion flutter.compileSdkVersion/compileSdkVersion 34/g' android/app/build.gradle
+          sed -i 's/targetSdkVersion flutter.targetSdkVersion/targetSdkVersion 34/g' android/app/build.gradle
 
       - run: flutter pub get
 
-      - run: flutter build apk --debug --verbose
+      - run: flutter build apk --debug
 
       - uses: actions/upload-artifact@v4
         with:
           name: gait-detector-apk
           path: build/app/outputs/apk/debug/app-debug.apk
-          if-no-files-found: warn
-          retention-days: 30
