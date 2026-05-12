@@ -1,0 +1,65 @@
+def localProperties = new File(rootDir, '../../local.properties')
+def properties = new Properties()
+
+if (localProperties.exists()) {
+    properties.load(localProperties.newDataInputStream())
+}
+
+def flutterRoot = file(properties.getProperty('flutter.sdk') ?: rootProject.projectDir.parent.toString())
+
+def flutterMinSdkVersion = getFlutterMinSdkVersion()
+def flutterTargetSdkVersion = getFlutterTargetSdkVersion()
+
+apply plugin: 'com.android.application'
+apply plugin: 'kotlin-android'
+apply from: "$flutterRoot/packages/flutter_tools/gradle/flutter.gradle"
+
+android {
+    compileSdkVersion flutter.compileSdkVersion
+    ndkVersion flutter.ndkVersion
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    kotlinOptions {
+        jvmTarget = '1.8'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    defaultConfig {
+        applicationId "com.example.gait_detector"
+        minSdkVersion flutterMinSdkVersion
+        targetSdkVersion flutterTargetSdkVersion
+        versionCode flutter.versionCode
+        versionName flutter.versionName
+    }
+
+    buildTypes {
+        release {
+            signingConfig signingConfigs.debug
+        }
+    }
+}
+
+flutter {
+    source '../..'
+}
+
+dependencies {
+    implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk8:$kotlin_version"
+}
+
+def getFlutterMinSdkVersion() {
+    def minSdkVersion = gradle.ext.has('minSdkVersion') ? gradle.ext.minSdkVersion : 21
+    return minSdkVersion
+}
+
+def getFlutterTargetSdkVersion() {
+    def targetSdkVersion = gradle.ext.has('targetSdkVersion') ? gradle.ext.targetSdkVersion : 33
+    return targetSdkVersion
+}
