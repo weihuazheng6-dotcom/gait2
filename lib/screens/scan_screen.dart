@@ -12,94 +12,17 @@ class ScanScreen extends StatefulWidget {
 
 class _ScanScreenState extends State<ScanScreen> {
   late BLEManager _bleManager;
-  SensorRole? _selectedRole;
+  Map<String, SensorRole> _selectedDevices = {};
 
   @override
   void initState() {
     super.initState();
     _bleManager = context.read<BLEManager>();
-    _startScanning();
+    _startScan();
   }
 
-  void _startScanning() async {
-    await _bleManager.startScan(duration: const Duration(seconds: 12));
-    setState(() {});
-  }
-
-  void _showRoleSelectionDialog(BLEDevice device) {
-    showDialog(
-      context: context,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          title: const Text('选择设备角色'),
-          content: const Text('请选择此设备的用途:'),
-          actions: [
-            _buildRoleButton(device, SensorRole.leftPressure, '左脚压力'),
-            _buildRoleButton(device, SensorRole.rightPressure, '右脚压力'),
-            _buildRoleButton(device, SensorRole.leftIMU, '左脚IMU'),
-            _buildRoleButton(device, SensorRole.rightIMU, '右脚IMU'),
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('取消'),
-            ),
-          ],
-        );
-      },
-    );
-  }
-
-  Widget _buildRoleButton(BLEDevice device, SensorRole role, String label) {
-    return TextButton(
-      onPressed: () {
-        Navigator.pop(context);
-        _connectDevice(device.deviceId, role);
-      },
-      child: Text(label),
-    );
-  }
-
-  void _connectDevice(String deviceId, SensorRole role) async {
-    _showLoadingDialog();
-
-    final success = await _bleManager.connectDevice(deviceId, role);
-
-    if (mounted) {
-      Navigator.pop(context); // 关闭加载对话框
-
-      if (success) {
-        _showSnackBar('${_bleManager.getDeviceByRole(role)?.name ?? '设备'} 连接成功');
-      } else {
-        _showSnackBar('连接失败，请重试');
-      }
-    }
-  }
-
-  void _showLoadingDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (BuildContext context) {
-        return AlertDialog(
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: const [
-              CircularProgressIndicator(),
-              SizedBox(height: 16),
-              Text('连接中...'),
-            ],
-          ),
-        );
-      },
-    );
-  }
-
-  void _showSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        duration: const Duration(seconds: 2),
-      ),
-    );
+  void _startScan() {
+    _bleManager.startScan();
   }
 
   @override
@@ -107,142 +30,171 @@ class _ScanScreenState extends State<ScanScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('扫描设备'),
-        actions: [
-          if (_bleManager.isScanning)
-            Center(
-              child: Padding(
-                padding: const EdgeInsets.only(right: 16),
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      Theme.of(context).primaryColor,
-                    ),
-                  ),
-                ),
-              ),
-            )
-          else
-            TextButton(
-              onPressed: _startScanning,
-              child: const Text('重新扫描'),
-            ),
-        ],
+        elevation: 0,
       ),
       body: Consumer<BLEManager>(
         builder: (context, bleManager, _) {
-          final devices = bleManager.getDiscoveredDevices();
-
-          if (devices.isEmpty) {
-            return Center(
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Icon(
-                    Icons.bluetooth_disabled,
-                    size: 64,
-                    color: Colors.grey[300],
-                  ),
-                  const SizedBox(height: 16),
-                  Text(
-                    bleManager.isScanning ? '扫描中...' : '未发现设备',
-                    style: TextStyle(
-                      fontSize: 16,
-                      color: Colors.grey[600],
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-                  ElevatedButton.icon(
-                    onPressed: _startScanning,
-                    icon: const Icon(Icons.refresh),
-                    label: const Text('重新扫描'),
-                  ),
-                ],
-              ),
-            );
-          }
-
           return Column(
             children: [
-              // 已连接设备列表
-              if (bleManager.getConnectedDevices().isNotEmpty)
-                Container(
-                  padding: const EdgeInsets.all(16),
-                  color: const Color(0xFFF5F5F5),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '已连接设备',
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: Color(0xFF1565C0),
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      ...bleManager.getConnectedDevices().map((device) {
-                        return Container(
-                          padding: const EdgeInsets.all(8),
-                          margin: const EdgeInsets.only(bottom: 4),
-                          decoration: BoxDecoration(
-                            color: Colors.white,
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Row(
-                            children: [
-                              const Icon(Icons.check_circle, color: Colors.green),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
-                                    Text(
-                                      device.name,
-                                      style: const TextStyle(
-                                        fontWeight: FontWeight.w500,
-                                      ),
-                                    ),
-                                    Text(
-                                      device.role.toString().split('.').last,
-                                      style: TextStyle(
-                                        fontSize: 12,
-                                        color: Colors.grey[600],
-                                      ),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        );
-                      }).toList(),
-                    ],
-                  ),
-                ),
-
-              // 可用设备列表
-              Expanded(
-                child: ListView(
-                  padding: const EdgeInsets.all(16),
+              // ============================================
+              // 扫描状态栏
+              // ============================================
+              Container(
+                padding: const EdgeInsets.all(16),
+                color: Colors.blue.shade50,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
                   children: [
-                    const Text(
-                      '可用设备',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: Color(0xFF1565C0),
-                      ),
+                    Row(
+                      children: [
+                        if (bleManager.isScanning)
+                          const SizedBox(
+                            width: 20,
+                            height: 20,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                            ),
+                          )
+                        else
+                          const Icon(Icons.bluetooth_searching),
+                        const SizedBox(width: 12),
+                        Text(
+                          bleManager.isScanning ? '扫描中...' : '已停止扫描',
+                          style: const TextStyle(fontSize: 14),
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 12),
-                    ...devices.map((device) {
-                      return _buildDeviceListItem(device);
-                    }).toList(),
+                    ElevatedButton(
+                      onPressed: bleManager.isScanning
+                          ? () => bleManager.stopScan()
+                          : _startScan,
+                      child: Text(bleManager.isScanning ? '停止' : '重新扫描'),
+                    ),
                   ],
                 ),
               ),
+
+              // ============================================
+              // 设备列表
+              // ============================================
+              Expanded(
+                child: bleManager.availableDevices.isEmpty
+                    ? Center(
+                        child: Column(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            Icon(
+                              Icons.bluetooth_disabled,
+                              size: 48,
+                              color: Colors.grey.shade400,
+                            ),
+                            const SizedBox(height: 16),
+                            Text(
+                              '未找到设备',
+                              style: TextStyle(
+                                fontSize: 16,
+                                color: Colors.grey.shade600,
+                              ),
+                            ),
+                            const SizedBox(height: 8),
+                            Text(
+                              '请确保传感器已打开并处于配对模式',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: Colors.grey.shade500,
+                              ),
+                            ),
+                          ],
+                        ),
+                      )
+                    : ListView.builder(
+                        padding: const EdgeInsets.all(8),
+                        itemCount: bleManager.availableDevices.length,
+                        itemBuilder: (context, index) {
+                          final device = bleManager.availableDevices[index];
+                          final isSelected =
+                              _selectedDevices.containsKey(device.id);
+                          final selectedRole = _selectedDevices[device.id];
+
+                          return Card(
+                            margin: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 4,
+                            ),
+                            child: ListTile(
+                              leading: Icon(
+                                Icons.sensors,
+                                color: isSelected
+                                    ? Colors.blue
+                                    : Colors.grey.shade400,
+                              ),
+                              title: Text(
+                                device.name.isEmpty
+                                    ? '未知设备'
+                                    : device.name,
+                                style: const TextStyle(
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              subtitle: Text(device.id),
+                              trailing: isSelected
+                                  ? Chip(
+                                      label: Text(
+                                        selectedRole ==
+                                                SensorRole.leftFoot
+                                            ? '左脚'
+                                            : '右脚',
+                                        style: const TextStyle(
+                                          color: Colors.white,
+                                          fontSize: 12,
+                                        ),
+                                      ),
+                                      backgroundColor: Colors.blue,
+                                    )
+                                  : null,
+                              onTap: () => _showRoleSelection(
+                                context,
+                                device,
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+              ),
+
+              // ============================================
+              // 连接按钮
+              // ============================================
+              if (_selectedDevices.isNotEmpty)
+                Container(
+                  padding: const EdgeInsets.all(16),
+                  color: Colors.grey.shade100,
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                        '已选择 ${_selectedDevices.length} 个设备',
+                        style: const TextStyle(
+                          fontWeight: FontWeight.bold,
+                          fontSize: 14,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      ElevatedButton.icon(
+                        onPressed: () async {
+                          await _connectSelectedDevices();
+                        },
+                        icon: const Icon(Icons.link),
+                        label: const Text('连接选定设备'),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: Colors.green,
+                          foregroundColor: Colors.white,
+                          padding: const EdgeInsets.symmetric(vertical: 12),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
             ],
           );
         },
@@ -250,102 +202,102 @@ class _ScanScreenState extends State<ScanScreen> {
     );
   }
 
-  Widget _buildDeviceListItem(BLEDevice device) {
-    final rssiColor = _getRSSIColor(device.rssi);
-
-    return GestureDetector(
-      onTap: () => _showRoleSelectionDialog(device),
-      onLongPress: () => _showRoleSelectionDialog(device),
-      child: Card(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Row(
-            children: [
-              Icon(
-                Icons.bluetooth,
-                color: rssiColor,
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      device.name,
-                      style: const TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w500,
-                      ),
-                    ),
-                    Text(
-                      device.deviceId,
-                      style: TextStyle(
-                        fontSize: 11,
-                        color: Colors.grey[600],
-                      ),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                    ),
-                  ],
-                ),
-              ),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.end,
-                children: [
-                  Text(
-                    '${device.rssi} dBm',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: rssiColor,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  const SizedBox(height: 4),
-                  _buildSignalBars(device.rssi),
-                ],
-              ),
-            ],
+  void _showRoleSelection(BuildContext context, dynamic device) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(device.name.isEmpty ? '未知设备' : device.name),
+        content: const Text('选择传感器位置'),
+        actions: [
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _selectedDevices[device.id] = SensorRole.leftFoot;
+              });
+              Navigator.pop(context);
+            },
+            child: const Text('左脚'),
           ),
-        ),
+          TextButton(
+            onPressed: () {
+              setState(() {
+                _selectedDevices[device.id] = SensorRole.rightFoot;
+              });
+              Navigator.pop(context);
+            },
+            child: const Text('右脚'),
+          ),
+          if (_selectedDevices.containsKey(device.id))
+            TextButton(
+              onPressed: () {
+                setState(() {
+                  _selectedDevices.remove(device.id);
+                });
+                Navigator.pop(context);
+              },
+              child: const Text('取消选择', style: TextStyle(color: Colors.red)),
+            ),
+        ],
       ),
     );
   }
 
-  Widget _buildSignalBars(int rssi) {
-    int bars;
-    if (rssi > -50) {
-      bars = 4;
-    } else if (rssi > -60) {
-      bars = 3;
-    } else if (rssi > -70) {
-      bars = 2;
-    } else {
-      bars = 1;
-    }
-
-    return Row(
-      children: List.generate(
-        4,
-        (index) => Container(
-          width: 2,
-          height: 8 + (index * 2).toDouble(),
-          margin: const EdgeInsets.only(right: 2),
-          decoration: BoxDecoration(
-            color: index < bars ? Colors.blue : Colors.grey[300],
-            borderRadius: BorderRadius.circular(1),
-          ),
+  Future<void> _connectSelectedDevices() async {
+    final bleManager = context.read<BLEManager>();
+    
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: const Text('连接中...'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: const [
+            CircularProgressIndicator(),
+            SizedBox(height: 16),
+            Text('正在连接设备...'),
+          ],
         ),
       ),
     );
-  }
 
-  Color _getRSSIColor(int rssi) {
-    if (rssi > -50) {
-      return Colors.green;
-    } else if (rssi > -70) {
-      return Colors.orange;
-    } else {
-      return Colors.red;
+    try {
+      for (var entry in _selectedDevices.entries) {
+        final device = bleManager.availableDevices
+            .firstWhere((d) => d.id == entry.key);
+        final role = entry.value;
+
+        await bleManager.connectDevice(device, role);
+      }
+
+      if (mounted) {
+        Navigator.pop(context); // 关闭加载对话框
+        
+        // 等待一秒后返回主页
+        await Future.delayed(const Duration(seconds: 1));
+        
+        if (mounted) {
+          Navigator.pop(context); // 返回主页
+          
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('✓ 设备连接成功！'),
+              backgroundColor: Colors.green,
+            ),
+          );
+        }
+      }
+    } catch (e) {
+      if (mounted) {
+        Navigator.pop(context);
+        
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('✗ 连接失败: $e'),
+            backgroundColor: Colors.red,
+          ),
+        );
+      }
     }
   }
 
