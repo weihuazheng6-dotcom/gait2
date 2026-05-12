@@ -1,390 +1,357 @@
-import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
-import 'services/ble_manager.dart';
-import 'models/gait_data.dart';
-import 'screens/home_screen.dart';
-import 'screens/scan_screen.dart';
+import 'dart:async';
+import 'package:flutter/foundation.dart';
+import 'package:flutter_blue/flutter_blue.dart';
+import 'gait_data.dart';
+import 'csv_export.dart';
+import 'package:intl/intl.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+class BLEManager extends ChangeNotifier {
+  final FlutterBlue _flutterBlue = FlutterBlue.instance;
 
-class MyApp extends StatelessWidget {
-  const MyApp({Key? key}) : super(key: key);
+  // 设备列表
+  List<BluetoothDevice> _availableDevices = [];
+  Map<String, BluetoothDevice> _connectedDevices = {};
 
-  @override
-  Widget build(BuildContext context) {
-    return ChangeNotifierProvider(
-      create: (_) => BLEManager(),
-      child: MaterialApp(
-        title: '步态检测',
-        theme: ThemeData(
-          primaryColor: Color(0xFF1565C0),
-          useMaterial3: true,
-          colorScheme: ColorScheme.fromSeed(
-            seedColor: Color(0xFF1565C0),
-          ),
-        ),
-        home: const HomePage(),
-        routes: {
-          '/home': (context) => const HomePage(),
-          '/scan': (context) => const ScanScreen(),
-        },
-      ),
-    );
+  // 数据缓存
+  IMUData? _currentLeftIMU;
+  IMUData? _currentRightIMU;
+  PressureData? _currentLeftPressure;
+  PressureData? _currentRightPressure;
+
+  // 录制缓冲
+  final List<GaitDataRecord> _recordBuffer = [];
+  final int _bufferSize = 1000;
+
+  // 状态
+  bool _isScanning = false;
+  bool _isRecording = false;
+  Timer? _recordTimer;
+  int _currentLabel = 0;
+
+  // Getters
+  List<BluetoothDevice> get availableDevices => _availableDevices;
+  bool get isScanning => _isScanning;
+  bool get isRecording => _isRecording;
+  List<GaitDataRecord> get records => _recordBuffer;
+  int get bufferSize => _recordBuffer.length;
+
+  // ============================================
+  // 扫描设备
+  // ============================================
+
+  Future<void> startScan() async {
+    if (_isScanning) return;
+
+    _isScanning = true;
+    _availableDevices.clear();
+    notifyListeners();
+
+    try {
+      _flutterBlue.startScan(timeout: Duration(seconds: 10));
+
+      _flutterBlue.scanResults.listen((results) {
+        for (ScanResult result in results) {
+          if (!_availableDevices.contains(result.device)) {
+            _availableDevices.add(result.device);
+            print('Found device: ${result.device.name} (${result.device.id})');
+          }
+        }
+        notifyListeners();
+      });
+    } catch (e) {
+      print('Scan error: $e');
+    }
+  }
+
+  Future<void> stopScan() async {
+    _isScanning = false;
+    await _flutterBlue.stopScan();
+    notifyListeners();
+  }
+
+  // ============================================
+  // 连接设备
+  // ============================================
+
+  Future<bool> connectDevice(BluetoothDevice device, SensorRole role) async {
+    try {
+      print('Connecting to ${device.name} as $role...');
+      await device.connect(timeout: Duration(seconds: 10));
+
+      _connectedDevices[device.id] = device;
+
+      // 订阅特性
+      _setupNotifications(device, role);
+
+      print('✓ Connected to ${device.name}');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('✗ Connection error: $e');
+      return false;
+    }
+  }
+
+  Future<void> disconnectDevice(String deviceId) async {
+    if (_connectedDevices.containsKey(deviceId)) {
+      try {
+        await _connectedDevices[deviceId]?.disconnect();
+        _connectedDevices.remove(deviceId);
+        print('✓ Disconnected');
+      } catch (e) {
+        print('Disconnect error: $e');
+      }
+    }
+    notifyListeners();
+  }
+
+  // ============================================
+  // 设置通知（蓝牙数据接收）
+  // ============================================
+
+  void _setupNotifications(BluetoothDevice device, SensorRole role) async {
+    try {
+      List<BluetoothService> services = await device.discoverServices();
+
+      for (BluetoothService service in services) {
+        print('Service: ${service.uuid}');
+
+        for (BluetoothCharacteristic characteristic in service.characteristics) {
+          print('  Characteristic: ${characteristic.uuid}');
+
+          // 订阅通知
+          try {
+            await characteristic.setNotifyValue(true);
+
+            characteristic.value.listen((value) {
+              _handleBluetoothData(value, role, characteristic.uuid.toString());
+            });
+          } catch (e) {
+            // 某些特性不支持通知
+          }
+        }
+      }
+    } catch (e) {
+      print('Setup notifications error: $e');
+    }
+  }
+
+  // ============================================
+  // 处理蓝牙数据
+  // ============================================
+
+  void _handleBluetoothData(List<int> data, SensorRole role, String uuid) {
+    try {
+      // 维特 IMU 传感器 (0x55 0x61 + 18字节)
+      if (data.length >= 20 && data[0] == 0x55 && data[1] == 0x61) {
+        _handleIMUData(data, role);
+      }
+      // JDY-10 压力传感器 (ASCII 字符串 "$P1,P2,P3")
+      else if (data.isNotEmpty && data[0] == 0x24) { // '$'
+        _handlePressureData(data, role);
+      }
+    } catch (e) {
+      print('Data handling error: $e');
+    }
+  }
+
+  // ============================================
+  // IMU 数据处理
+  // ============================================
+
+  void _handleIMUData(List<int> data, SensorRole role) {
+    try {
+      // 验证帧
+      if (data.length < 20) return;
+
+      // 提取 18 字节 IMU 数据
+      List<int> imuFrame = data.sublist(2, 20);
+
+      // 解析
+      IMUData imuData = IMUData.parseFromFrame(imuFrame);
+
+      // 更新
+      if (role == SensorRole.leftFoot) {
+        _currentLeftIMU = imuData;
+        print('✓ Left IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
+            '${imuData.accY.toStringAsFixed(2)}, '
+            '${imuData.accZ.toStringAsFixed(2)})');
+      } else {
+        _currentRightIMU = imuData;
+        print('✓ Right IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
+            '${imuData.accY.toStringAsFixed(2)}, '
+            '${imuData.accZ.toStringAsFixed(2)})');
+      }
+
+      notifyListeners();
+    } catch (e) {
+      print('IMU parse error: $e');
+    }
+  }
+
+  // ============================================
+  // 压力数据处理
+  // ============================================
+
+  void _handlePressureData(List<int> data, SensorRole role) {
+    try {
+      // 转换为字符串
+      String str = String.fromCharCodes(data).trim();
+
+      if (!str.startsWith('\$')) return;
+
+      // 解析格式: "$P1,P2,P3"
+      String valueStr = str.substring(1);
+      List<String> values = valueStr.split(',');
+
+      if (values.length < 3) return;
+
+      double p1 = double.tryParse(values[0]) ?? 0;
+      double p5 = double.tryParse(values[1]) ?? 0;
+      double ph = double.tryParse(values[2]) ?? 0;
+
+      PressureData pressure = PressureData(p1: p1, p5: p5, heel: ph);
+
+      if (role == SensorRole.leftFoot) {
+        _currentLeftPressure = pressure;
+        print('✓ Left Pressure: P1=$p1, P5=$p5, PH=$ph');
+      } else {
+        _currentRightPressure = pressure;
+        print('✓ Right Pressure: P1=$p1, P5=$p5, PH=$ph');
+      }
+
+      notifyListeners();
+    } catch (e) {
+      print('Pressure parse error: $e');
+    }
+  }
+
+  // ============================================
+  // 录制方法
+  // ============================================
+
+  void startRecording() {
+    if (_isRecording) return;
+
+    _recordBuffer.clear();
+    _isRecording = true;
+
+    // 每 50ms 采样一次（20Hz）
+    _recordTimer = Timer.periodic(Duration(milliseconds: 50), (_) {
+      _createRecord();
+    });
+
+    print('✓ Recording started');
+    notifyListeners();
+  }
+
+  void stopRecording() {
+    _recordTimer?.cancel();
+    _recordTimer = null;
+    _isRecording = false;
+
+    print('✓ Recording stopped (${_recordBuffer.length} records)');
+    notifyListeners();
+  }
+
+  // ============================================
+  // 创建记录
+  // ============================================
+
+  void _createRecord() {
+    // 检查数据完整性
+    if (_currentLeftIMU == null ||
+        _currentRightIMU == null ||
+        _currentLeftPressure == null ||
+        _currentRightPressure == null) {
+      return; // 数据不完整，跳过
+    }
+
+    try {
+      final record = GaitDataRecord(
+        timestamp: DateTime.now().toIso8601String(),
+
+        // 右脚
+        rightP1: _currentRightPressure!.p1,
+        rightP5: _currentRightPressure!.p5,
+        rightPH: _currentRightPressure!.heel,
+        rightAccX: _currentRightIMU!.accX,
+        rightAccY: _currentRightIMU!.accY,
+        rightAccZ: _currentRightIMU!.accZ,
+        rightGyroX: _currentRightIMU!.gyroX,
+        rightGyroY: _currentRightIMU!.gyroY,
+        rightGyroZ: _currentRightIMU!.gyroZ,
+        rightRoll: _currentRightIMU!.roll,
+        rightPitch: _currentRightIMU!.pitch,
+        rightYaw: _currentRightIMU!.yaw,
+
+        // 左脚
+        leftP1: _currentLeftPressure!.p1,
+        leftP5: _currentLeftPressure!.p5,
+        leftPH: _currentLeftPressure!.heel,
+        leftAccX: _currentLeftIMU!.accX,
+        leftAccY: _currentLeftIMU!.accY,
+        leftAccZ: _currentLeftIMU!.accZ,
+        leftGyroX: _currentLeftIMU!.gyroX,
+        leftGyroY: _currentLeftIMU!.gyroY,
+        leftGyroZ: _currentLeftIMU!.gyroZ,
+        leftRoll: _currentLeftIMU!.roll,
+        leftPitch: _currentLeftIMU!.pitch,
+        leftYaw: _currentLeftIMU!.yaw,
+
+        // 标签
+        label: _currentLabel.toString(),
+      );
+
+      _recordBuffer.add(record);
+      notifyListeners();
+    } catch (e) {
+      print('Record creation error: $e');
+    }
+  }
+
+  // ============================================
+  // 导出数据
+  // ============================================
+
+  Future<bool> exportRecords() async {
+    if (_recordBuffer.isEmpty) {
+      print('⚠ No data to export');
+      return false;
+    }
+
+    try {
+      print('Exporting ${_recordBuffer.length} records...');
+      final file = await CSVExportService.exportToCSV(_recordBuffer);
+      _recordBuffer.clear();
+      print('✓ Export successful: ${file.path}');
+      notifyListeners();
+      return true;
+    } catch (e) {
+      print('✗ Export failed: $e');
+      return false;
+    }
+  }
+
+  // ============================================
+  // 辅助方法
+  // ============================================
+
+  void setLabel(int label) {
+    _currentLabel = label;
+    notifyListeners();
+  }
+
+  void printStatus() {
+    print('=== BLE Status ===');
+    print('Left IMU: ${_currentLeftIMU != null ? "✓" : "✗"}');
+    print('Right IMU: ${_currentRightIMU != null ? "✓" : "✗"}');
+    print('Left Pressure: ${_currentLeftPressure != null ? "✓" : "✗"}');
+    print('Right Pressure: ${_currentRightPressure != null ? "✓" : "✗"}');
+    print('Buffer: ${_recordBuffer.length}');
+    print('Recording: ${_isRecording ? "✓" : "✗"}');
+    print('==================');
   }
 }
 
-// ============================================
-// 主页面
-// ============================================
-
-class HomePage extends StatefulWidget {
-  const HomePage({Key? key}) : super(key: key);
-
-  @override
-  State<HomePage> createState() => _HomePageState();
-}
-
-class _HomePageState extends State<HomePage> {
-  late BLEManager _bleManager;
-  int _selectedLabel = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _bleManager = context.read<BLEManager>();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('步态检测系统'),
-        elevation: 0,
-      ),
-      body: SingleChildScrollView(
-        child: Padding(
-          padding: const EdgeInsets.all(16.0),
-          child: Column(
-            children: [
-              // ============================================
-              // 连接状态显示
-              // ============================================
-              Consumer<BLEManager>(
-                builder: (context, bleManager, _) {
-                  return Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Row(
-                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                            children: [
-                              const Text(
-                                '传感器状态',
-                                style: TextStyle(
-                                  fontSize: 18,
-                                  fontWeight: FontWeight.bold,
-                                ),
-                              ),
-                              ElevatedButton.icon(
-                                onPressed: () {
-                                  bleManager.printStatus();
-                                },
-                                icon: const Icon(Icons.info),
-                                label: const Text('状态'),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-                          _StatusRow(
-                            label: '左脚 IMU',
-                            isConnected: true, // 需要从 BLE Manager 读取
-                          ),
-                          _StatusRow(
-                            label: '右脚 IMU',
-                            isConnected: true,
-                          ),
-                          _StatusRow(
-                            label: '左脚压力',
-                            isConnected: true,
-                          ),
-                          _StatusRow(
-                            label: '右脚压力',
-                            isConnected: true,
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // ============================================
-              // 标签选择
-              // ============================================
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const Text(
-                        '步态阶段标签 (0-9)',
-                        style: TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                      const SizedBox(height: 12),
-                      Wrap(
-                        spacing: 8,
-                        runSpacing: 8,
-                        children: List.generate(10, (index) {
-                          return FilterChip(
-                            label: Text(index.toString()),
-                            selected: _selectedLabel == index,
-                            onSelected: (selected) {
-                              setState(() => _selectedLabel = index);
-                              _bleManager.setLabel(index);
-                            },
-                          );
-                        }),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              // ============================================
-              // 控制按钮
-              // ============================================
-              Consumer<BLEManager>(
-                builder: (context, bleManager, _) {
-                  return Card(
-                    child: Padding(
-                      padding: const EdgeInsets.all(16.0),
-                      child: Column(
-                        children: [
-                          // 扫描和连接
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    Navigator.pushNamed(context, '/scan');
-                                  },
-                                  icon: const Icon(Icons.bluetooth_searching),
-                                  label: const Text('扫描设备'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    bleManager.printStatus();
-                                  },
-                                  icon: const Icon(Icons.refresh),
-                                  label: const Text('刷新'),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-
-                          // 录制控制
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: bleManager.isRecording
-                                      ? null
-                                      : () => bleManager.startRecording(),
-                                  icon: const Icon(Icons.play_arrow),
-                                  label: const Text('开始录制'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.green,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: bleManager.isRecording
-                                      ? () => bleManager.stopRecording()
-                                      : null,
-                                  icon: const Icon(Icons.stop),
-                                  label: const Text('停止录制'),
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: Colors.red,
-                                    foregroundColor: Colors.white,
-                                  ),
-                                ),
-                              ),
-                            ],
-                          ),
-                          const SizedBox(height: 12),
-
-                          // 导出按钮
-                          Row(
-                            children: [
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: bleManager.bufferSize > 0
-                                      ? () => _showExportDialog(context)
-                                      : null,
-                                  icon: const Icon(Icons.save_alt),
-                                  label: const Text('导出数据'),
-                                ),
-                              ),
-                              const SizedBox(width: 8),
-                              Expanded(
-                                child: ElevatedButton.icon(
-                                  onPressed: () {
-                                    setState(() {});
-                                  },
-                                  icon: const Icon(Icons.list),
-                                  label: Text('${bleManager.bufferSize} 条'),
-                                ),
-                              ),
-                            ],
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-              const SizedBox(height: 16),
-
-              // ============================================
-              // 提示信息
-              // ============================================
-              Container(
-                padding: const EdgeInsets.all(12),
-                decoration: BoxDecoration(
-                  color: Colors.blue.shade50,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: const Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text(
-                      '使用说明',
-                      style: TextStyle(fontWeight: FontWeight.bold),
-                    ),
-                    SizedBox(height: 8),
-                    Text(
-                      '1. 点击"扫描设备"，连接左右脚传感器\n'
-                      '2. 选择步态阶段标签 (0-9)\n'
-                      '3. 点击"开始录制"开始数据采集\n'
-                      '4. 点击"停止录制"结束采集\n'
-                      '5. 点击"导出数据"保存为 CSV 文件',
-                      style: TextStyle(fontSize: 12),
-                    ),
-                  ],
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  void _showExportDialog(BuildContext context) {
-    showDialog(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('导出数据'),
-        content: Text('确认导出 ${_bleManager.bufferSize} 条记录？'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('取消'),
-          ),
-          ElevatedButton(
-            onPressed: () async {
-              Navigator.pop(context);
-              final success = await _bleManager.exportRecords();
-              
-              if (mounted) {
-                ScaffoldMessenger.of(context).showSnackBar(
-                  SnackBar(
-                    content: Text(
-                      success ? '✓ 导出成功' : '✗ 导出失败',
-                    ),
-                    backgroundColor: success ? Colors.green : Colors.red,
-                  ),
-                );
-                setState(() {});
-              }
-            },
-            child: const Text('确认导出'),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// ============================================
-// 状态指示器
-// ============================================
-
-class _StatusRow extends StatelessWidget {
-  final String label;
-  final bool isConnected;
-
-  const _StatusRow({
-    Key? key,
-    required this.label,
-    required this.isConnected,
-  }) : super(key: key);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 4.0),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Text(label),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-            decoration: BoxDecoration(
-              color: isConnected ? Colors.green.shade100 : Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(4),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Container(
-                  width: 8,
-                  height: 8,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: isConnected ? Colors.green : Colors.grey,
-                  ),
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  isConnected ? '已连接' : '未连接',
-                  style: TextStyle(
-                    fontSize: 12,
-                    color: isConnected ? Colors.green : Colors.grey,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
+enum SensorRole { leftFoot, rightFoot, unknown }
