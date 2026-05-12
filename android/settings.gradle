@@ -1,0 +1,19 @@
+include ':app'
+
+def localProperties = new File(rootDir, 'local.properties')
+def properties = new Properties()
+
+if (localProperties.exists()) {
+    properties.load(localProperties.newDataInputStream())
+}
+
+def flutterSdkPath = properties.getProperty('flutter.sdk')
+if (flutterSdkPath == null) {
+    throw new GradleException("Flutter SDK not found. Define location with flutter.sdk in the local.properties file.")
+}
+
+def flutterRoot = file(flutterSdkPath).getAbsoluteFile()
+
+if (!flutterRoot.isDirectory()) {
+    throw new GradleException("flutter.sdk=${flutterSdkPath} does not point to the Flutter SDK directory.")
+}
