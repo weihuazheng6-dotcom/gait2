@@ -1,234 +1,390 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
+import 'package:provider/provider.dart';
+import 'services/ble_manager.dart';
+import 'models/gait_data.dart';
+import 'screens/home_screen.dart';
+import 'screens/scan_screen.dart';
 
-/// 压力数据 (JDY-10-V2.5 传感器) - 3个字段
-class PressureData {
-  final double p1;      // 第一跖骨头
-  final double p5;      // 第五跖骨头
-  final double heel;    // 足跟
-
-  PressureData({
-    required this.p1,
-    required this.p5,
-    required this.heel,
-  });
-
-  @override
-  String toString() => 'P1:$p1,P5:$p5,PH:$heel';
+void main() {
+  runApp(const MyApp());
 }
 
-/// 惯性测量单元数据 (WT9011DCL 传感器) - 9个数据字段
-class IMUData {
-  // 加速度 (g)
-  final double accX;
-  final double accY;
-  final double accZ;
+class MyApp extends StatelessWidget {
+  const MyApp({Key? key}) : super(key: key);
 
-  // 角速度 (°/s)
-  final double gyroX;
-  final double gyroY;
-  final double gyroZ;
+  @override
+  Widget build(BuildContext context) {
+    return ChangeNotifierProvider(
+      create: (_) => BLEManager(),
+      child: MaterialApp(
+        title: '步态检测',
+        theme: ThemeData(
+          primaryColor: Color(0xFF1565C0),
+          useMaterial3: true,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: Color(0xFF1565C0),
+          ),
+        ),
+        home: const HomePage(),
+        routes: {
+          '/home': (context) => const HomePage(),
+          '/scan': (context) => const ScanScreen(),
+        },
+      ),
+    );
+  }
+}
 
-  // 欧拉角 (°) - Roll, Pitch, Yaw
-  final double roll;
-  final double pitch;
-  final double yaw;
+// ============================================
+// 主页面
+// ============================================
 
-  IMUData({
-    required this.accX,
-    required this.accY,
-    required this.accZ,
-    required this.gyroX,
-    required this.gyroY,
-    required this.gyroZ,
-    required this.roll,
-    required this.pitch,
-    required this.yaw,
-  });
+class HomePage extends StatefulWidget {
+  const HomePage({Key? key}) : super(key: key);
 
-  /// 从维特传感器的蓝牙原始数据解析 (Flag=0x61, 18字节)
-  /// 数据顺序: AXL AXH AYL AYH AZL AZH WXL WXH WYL WYH WZL WZH RollL RollH PitchL PitchH YawL YawH
-  static IMUData parseFromFrame(List<int> frame) {
-    if (frame.length < 18) {
-      throw Exception('Invalid IMU frame length: ${frame.length}');
-    }
+  @override
+  State<HomePage> createState() => _HomePageState();
+}
 
-    // 辅助函数：16位有符号整数转换
-    int toShort(int low, int high) {
-      int value = ((high & 0xFF) << 8) | (low & 0xFF);
-      if (value & 0x8000 != 0) {
-        value = value - 0x10000;
-      }
-      return value;
-    }
+class _HomePageState extends State<HomePage> {
+  late BLEManager _bleManager;
+  int _selectedLabel = 0;
 
-    // 解析加速度 (g): value/32768*16g
-    double accX = toShort(frame[0], frame[1]) / 32768.0 * 16.0;
-    double accY = toShort(frame[2], frame[3]) / 32768.0 * 16.0;
-    double accZ = toShort(frame[4], frame[5]) / 32768.0 * 16.0;
+  @override
+  void initState() {
+    super.initState();
+    _bleManager = context.read<BLEManager>();
+  }
 
-    // 解析角速度 (°/s): value/32768*2000(°/s)
-    double gyroX = toShort(frame[6], frame[7]) / 32768.0 * 2000.0;
-    double gyroY = toShort(frame[8], frame[9]) / 32768.0 * 2000.0;
-    double gyroZ = toShort(frame[10], frame[11]) / 32768.0 * 2000.0;
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('步态检测系统'),
+        elevation: 0,
+      ),
+      body: SingleChildScrollView(
+        child: Padding(
+          padding: const EdgeInsets.all(16.0),
+          child: Column(
+            children: [
+              // ============================================
+              // 连接状态显示
+              // ============================================
+              Consumer<BLEManager>(
+                builder: (context, bleManager, _) {
+                  return Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              const Text(
+                                '传感器状态',
+                                style: TextStyle(
+                                  fontSize: 18,
+                                  fontWeight: FontWeight.bold,
+                                ),
+                              ),
+                              ElevatedButton.icon(
+                                onPressed: () {
+                                  bleManager.printStatus();
+                                },
+                                icon: const Icon(Icons.info),
+                                label: const Text('状态'),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+                          _StatusRow(
+                            label: '左脚 IMU',
+                            isConnected: true, // 需要从 BLE Manager 读取
+                          ),
+                          _StatusRow(
+                            label: '右脚 IMU',
+                            isConnected: true,
+                          ),
+                          _StatusRow(
+                            label: '左脚压力',
+                            isConnected: true,
+                          ),
+                          _StatusRow(
+                            label: '右脚压力',
+                            isConnected: true,
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
 
-    // 解析欧拉角 (°): value/32768*180(°)
-    double roll = toShort(frame[12], frame[13]) / 32768.0 * 180.0;
-    double pitch = toShort(frame[14], frame[15]) / 32768.0 * 180.0;
-    double yaw = toShort(frame[16], frame[17]) / 32768.0 * 180.0;
+              // ============================================
+              // 标签选择
+              // ============================================
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16.0),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text(
+                        '步态阶段标签 (0-9)',
+                        style: TextStyle(
+                          fontSize: 16,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      Wrap(
+                        spacing: 8,
+                        runSpacing: 8,
+                        children: List.generate(10, (index) {
+                          return FilterChip(
+                            label: Text(index.toString()),
+                            selected: _selectedLabel == index,
+                            onSelected: (selected) {
+                              setState(() => _selectedLabel = index);
+                              _bleManager.setLabel(index);
+                            },
+                          );
+                        }),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
 
-    return IMUData(
-      accX: accX,
-      accY: accY,
-      accZ: accZ,
-      gyroX: gyroX,
-      gyroY: gyroY,
-      gyroZ: gyroZ,
-      roll: roll,
-      pitch: pitch,
-      yaw: yaw,
+              // ============================================
+              // 控制按钮
+              // ============================================
+              Consumer<BLEManager>(
+                builder: (context, bleManager, _) {
+                  return Card(
+                    child: Padding(
+                      padding: const EdgeInsets.all(16.0),
+                      child: Column(
+                        children: [
+                          // 扫描和连接
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    Navigator.pushNamed(context, '/scan');
+                                  },
+                                  icon: const Icon(Icons.bluetooth_searching),
+                                  label: const Text('扫描设备'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    bleManager.printStatus();
+                                  },
+                                  icon: const Icon(Icons.refresh),
+                                  label: const Text('刷新'),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+
+                          // 录制控制
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: bleManager.isRecording
+                                      ? null
+                                      : () => bleManager.startRecording(),
+                                  icon: const Icon(Icons.play_arrow),
+                                  label: const Text('开始录制'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.green,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: bleManager.isRecording
+                                      ? () => bleManager.stopRecording()
+                                      : null,
+                                  icon: const Icon(Icons.stop),
+                                  label: const Text('停止录制'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: Colors.red,
+                                    foregroundColor: Colors.white,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 12),
+
+                          // 导出按钮
+                          Row(
+                            children: [
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: bleManager.bufferSize > 0
+                                      ? () => _showExportDialog(context)
+                                      : null,
+                                  icon: const Icon(Icons.save_alt),
+                                  label: const Text('导出数据'),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () {
+                                    setState(() {});
+                                  },
+                                  icon: const Icon(Icons.list),
+                                  label: Text('${bleManager.bufferSize} 条'),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 16),
+
+              // ============================================
+              // 提示信息
+              // ============================================
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade50,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: const Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      '使用说明',
+                      style: TextStyle(fontWeight: FontWeight.bold),
+                    ),
+                    SizedBox(height: 8),
+                    Text(
+                      '1. 点击"扫描设备"，连接左右脚传感器\n'
+                      '2. 选择步态阶段标签 (0-9)\n'
+                      '3. 点击"开始录制"开始数据采集\n'
+                      '4. 点击"停止录制"结束采集\n'
+                      '5. 点击"导出数据"保存为 CSV 文件',
+                      style: TextStyle(fontSize: 12),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 
-  @override
-  String toString() => 
-      'A:($accX,$accY,$accZ) G:($gyroX,$gyroY,$gyroZ) E:($roll,$pitch,$yaw)';
+  void _showExportDialog(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('导出数据'),
+        content: Text('确认导出 ${_bleManager.bufferSize} 条记录？'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              Navigator.pop(context);
+              final success = await _bleManager.exportRecords();
+              
+              if (mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  SnackBar(
+                    content: Text(
+                      success ? '✓ 导出成功' : '✗ 导出失败',
+                    ),
+                    backgroundColor: success ? Colors.green : Colors.red,
+                  ),
+                );
+                setState(() {});
+              }
+            },
+            child: const Text('确认导出'),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-/// BLE 设备信息
-class BLEDevice {
-  final String id;
-  final String name;
-  final SensorRole role;
-  final int rssi;
+// ============================================
+// 状态指示器
+// ============================================
 
-  BLEDevice({
-    required this.id,
-    required this.name,
-    required this.role,
-    required this.rssi,
-  });
-
-  @override
-  String toString() => '$name ($role) - RSSI: $rssi';
-}
-
-/// 传感器角色
-enum SensorRole { leftFoot, rightFoot, unknown }
-
-/// 连接状态
-enum ConnectionStatus { disconnected, connecting, connected, error }
-
-/// 步态数据记录 - 26 列 CSV 格式
-/// 结构: timestamp | rightP1 rightP5 rightPH rightAcc(3) rightGyro(3) rightAngle(3) | 
-///                  leftP1 leftP5 leftPH leftAcc(3) leftGyro(3) leftAngle(3) | label
-class GaitDataRecord {
-  final String timestamp;
-  
-  // 右脚: 3个压力 + 9个惯性 = 12个
-  final double rightP1;
-  final double rightP5;
-  final double rightPH;
-  final double rightAccX;
-  final double rightAccY;
-  final double rightAccZ;
-  final double rightGyroX;
-  final double rightGyroY;
-  final double rightGyroZ;
-  final double rightRoll;
-  final double rightPitch;
-  final double rightYaw;
-  
-  // 左脚: 3个压力 + 9个惯性 = 12个
-  final double leftP1;
-  final double leftP5;
-  final double leftPH;
-  final double leftAccX;
-  final double leftAccY;
-  final double leftAccZ;
-  final double leftGyroX;
-  final double leftGyroY;
-  final double leftGyroZ;
-  final double leftRoll;
-  final double leftPitch;
-  final double leftYaw;
-  
-  // 标签
+class _StatusRow extends StatelessWidget {
   final String label;
+  final bool isConnected;
 
-  GaitDataRecord({
-    required this.timestamp,
-    required this.rightP1,
-    required this.rightP5,
-    required this.rightPH,
-    required this.rightAccX,
-    required this.rightAccY,
-    required this.rightAccZ,
-    required this.rightGyroX,
-    required this.rightGyroY,
-    required this.rightGyroZ,
-    required this.rightRoll,
-    required this.rightPitch,
-    required this.rightYaw,
-    required this.leftP1,
-    required this.leftP5,
-    required this.leftPH,
-    required this.leftAccX,
-    required this.leftAccY,
-    required this.leftAccZ,
-    required this.leftGyroX,
-    required this.leftGyroY,
-    required this.leftGyroZ,
-    required this.leftRoll,
-    required this.leftPitch,
-    required this.leftYaw,
+  const _StatusRow({
+    Key? key,
     required this.label,
-  });
+    required this.isConnected,
+  }) : super(key: key);
 
-  /// 转换为 CSV 行 (26 列)
-  String toCSVRow() {
-    return [
-      timestamp,
-      // 右脚 (12列)
-      rightP1, rightP5, rightPH,
-      rightAccX, rightAccY, rightAccZ,
-      rightGyroX, rightGyroY, rightGyroZ,
-      rightRoll, rightPitch, rightYaw,
-      // 左脚 (12列)
-      leftP1, leftP5, leftPH,
-      leftAccX, leftAccY, leftAccZ,
-      leftGyroX, leftGyroY, leftGyroZ,
-      leftRoll, leftPitch, leftYaw,
-      // 标签
-      label,
-    ]
-    .map((v) => _formatValue(v))
-    .join(',');
-  }
-
-  /// 格式化值（避免科学计数法）
-  static String _formatValue(dynamic value) {
-    if (value is double) {
-      return value.toStringAsFixed(6).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
-    }
-    return value.toString();
-  }
-
-  /// CSV 表头 (26 列)
-  static String getCSVHeader() {
-    return [
-      'timestamp',
-      // 右脚
-      'rightP1', 'rightP5', 'rightPH',
-      'rightAccX', 'rightAccY', 'rightAccZ',
-      'rightGyroX', 'rightGyroY', 'rightGyroZ',
-      'rightRoll', 'rightPitch', 'rightYaw',
-      // 左脚
-      'leftP1', 'leftP5', 'leftPH',
-      'leftAccX', 'leftAccY', 'leftAccZ',
-      'leftGyroX', 'leftGyroY', 'leftGyroZ',
-      'leftRoll', 'leftPitch', 'leftYaw',
-      // 标签
-      'label',
-    ].join(',');
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4.0),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: isConnected ? Colors.green.shade100 : Colors.grey.shade100,
+              borderRadius: BorderRadius.circular(4),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: isConnected ? Colors.green : Colors.grey,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  isConnected ? '已连接' : '未连接',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: isConnected ? Colors.green : Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
