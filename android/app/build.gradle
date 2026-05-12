@@ -5,7 +5,7 @@ if (localProperties.exists()) {
     properties.load(localProperties.newDataInputStream())
 }
 
-def flutterRoot = file(properties.getProperty('flutter.sdk') ?: rootProject.projectDir.parent.toString())
+def flutterRoot = file(properties.getProperty('flutter.sdk') ?: rootProject.projectDir.parent.parent.toString()).absolutePath
 
 def flutterMinSdkVersion = getFlutterMinSdkVersion()
 def flutterTargetSdkVersion = getFlutterTargetSdkVersion()
