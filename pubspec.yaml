@@ -11,7 +11,11 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  flutter_blue_plus: ^1.18.0
+
+  # 蓝牙库 - 使用稳定版本
+  flutter_blue: ^0.8.0
+  
+  # 其他依赖
   permission_handler: ^11.0.0
   provider: ^6.0.5
   path_provider: ^2.1.1
@@ -22,6 +26,7 @@ dependencies:
 dev_dependencies:
   flutter_test:
     sdk: flutter
+
   flutter_lints: ^3.0.0
 
 flutter:
