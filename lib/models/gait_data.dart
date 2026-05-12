@@ -1,357 +1,234 @@
-import 'dart:async';
 import 'package:flutter/foundation.dart';
-import 'package:flutter_blue/flutter_blue.dart';
-import 'gait_data.dart';
-import 'csv_export.dart';
-import 'package:intl/intl.dart';
 
-class BLEManager extends ChangeNotifier {
-  final FlutterBlue _flutterBlue = FlutterBlue.instance;
+/// 压力数据 (JDY-10-V2.5 传感器) - 3个字段
+class PressureData {
+  final double p1;      // 第一跖骨头
+  final double p5;      // 第五跖骨头
+  final double heel;    // 足跟
 
-  // 设备列表
-  List<BluetoothDevice> _availableDevices = [];
-  Map<String, BluetoothDevice> _connectedDevices = {};
+  PressureData({
+    required this.p1,
+    required this.p5,
+    required this.heel,
+  });
 
-  // 数据缓存
-  IMUData? _currentLeftIMU;
-  IMUData? _currentRightIMU;
-  PressureData? _currentLeftPressure;
-  PressureData? _currentRightPressure;
-
-  // 录制缓冲
-  final List<GaitDataRecord> _recordBuffer = [];
-  final int _bufferSize = 1000;
-
-  // 状态
-  bool _isScanning = false;
-  bool _isRecording = false;
-  Timer? _recordTimer;
-  int _currentLabel = 0;
-
-  // Getters
-  List<BluetoothDevice> get availableDevices => _availableDevices;
-  bool get isScanning => _isScanning;
-  bool get isRecording => _isRecording;
-  List<GaitDataRecord> get records => _recordBuffer;
-  int get bufferSize => _recordBuffer.length;
-
-  // ============================================
-  // 扫描设备
-  // ============================================
-
-  Future<void> startScan() async {
-    if (_isScanning) return;
-
-    _isScanning = true;
-    _availableDevices.clear();
-    notifyListeners();
-
-    try {
-      _flutterBlue.startScan(timeout: Duration(seconds: 10));
-
-      _flutterBlue.scanResults.listen((results) {
-        for (ScanResult result in results) {
-          if (!_availableDevices.contains(result.device)) {
-            _availableDevices.add(result.device);
-            print('Found device: ${result.device.name} (${result.device.id})');
-          }
-        }
-        notifyListeners();
-      });
-    } catch (e) {
-      print('Scan error: $e');
-    }
-  }
-
-  Future<void> stopScan() async {
-    _isScanning = false;
-    await _flutterBlue.stopScan();
-    notifyListeners();
-  }
-
-  // ============================================
-  // 连接设备
-  // ============================================
-
-  Future<bool> connectDevice(BluetoothDevice device, SensorRole role) async {
-    try {
-      print('Connecting to ${device.name} as $role...');
-      await device.connect(timeout: Duration(seconds: 10));
-
-      _connectedDevices[device.id] = device;
-
-      // 订阅特性
-      _setupNotifications(device, role);
-
-      print('✓ Connected to ${device.name}');
-      notifyListeners();
-      return true;
-    } catch (e) {
-      print('✗ Connection error: $e');
-      return false;
-    }
-  }
-
-  Future<void> disconnectDevice(String deviceId) async {
-    if (_connectedDevices.containsKey(deviceId)) {
-      try {
-        await _connectedDevices[deviceId]?.disconnect();
-        _connectedDevices.remove(deviceId);
-        print('✓ Disconnected');
-      } catch (e) {
-        print('Disconnect error: $e');
-      }
-    }
-    notifyListeners();
-  }
-
-  // ============================================
-  // 设置通知（蓝牙数据接收）
-  // ============================================
-
-  void _setupNotifications(BluetoothDevice device, SensorRole role) async {
-    try {
-      List<BluetoothService> services = await device.discoverServices();
-
-      for (BluetoothService service in services) {
-        print('Service: ${service.uuid}');
-
-        for (BluetoothCharacteristic characteristic in service.characteristics) {
-          print('  Characteristic: ${characteristic.uuid}');
-
-          // 订阅通知
-          try {
-            await characteristic.setNotifyValue(true);
-
-            characteristic.value.listen((value) {
-              _handleBluetoothData(value, role, characteristic.uuid.toString());
-            });
-          } catch (e) {
-            // 某些特性不支持通知
-          }
-        }
-      }
-    } catch (e) {
-      print('Setup notifications error: $e');
-    }
-  }
-
-  // ============================================
-  // 处理蓝牙数据
-  // ============================================
-
-  void _handleBluetoothData(List<int> data, SensorRole role, String uuid) {
-    try {
-      // 维特 IMU 传感器 (0x55 0x61 + 18字节)
-      if (data.length >= 20 && data[0] == 0x55 && data[1] == 0x61) {
-        _handleIMUData(data, role);
-      }
-      // JDY-10 压力传感器 (ASCII 字符串 "$P1,P2,P3")
-      else if (data.isNotEmpty && data[0] == 0x24) { // '$'
-        _handlePressureData(data, role);
-      }
-    } catch (e) {
-      print('Data handling error: $e');
-    }
-  }
-
-  // ============================================
-  // IMU 数据处理
-  // ============================================
-
-  void _handleIMUData(List<int> data, SensorRole role) {
-    try {
-      // 验证帧
-      if (data.length < 20) return;
-
-      // 提取 18 字节 IMU 数据
-      List<int> imuFrame = data.sublist(2, 20);
-
-      // 解析
-      IMUData imuData = IMUData.parseFromFrame(imuFrame);
-
-      // 更新
-      if (role == SensorRole.leftFoot) {
-        _currentLeftIMU = imuData;
-        print('✓ Left IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
-            '${imuData.accY.toStringAsFixed(2)}, '
-            '${imuData.accZ.toStringAsFixed(2)})');
-      } else {
-        _currentRightIMU = imuData;
-        print('✓ Right IMU: Acc(${imuData.accX.toStringAsFixed(2)}, '
-            '${imuData.accY.toStringAsFixed(2)}, '
-            '${imuData.accZ.toStringAsFixed(2)})');
-      }
-
-      notifyListeners();
-    } catch (e) {
-      print('IMU parse error: $e');
-    }
-  }
-
-  // ============================================
-  // 压力数据处理
-  // ============================================
-
-  void _handlePressureData(List<int> data, SensorRole role) {
-    try {
-      // 转换为字符串
-      String str = String.fromCharCodes(data).trim();
-
-      if (!str.startsWith('\$')) return;
-
-      // 解析格式: "$P1,P2,P3"
-      String valueStr = str.substring(1);
-      List<String> values = valueStr.split(',');
-
-      if (values.length < 3) return;
-
-      double p1 = double.tryParse(values[0]) ?? 0;
-      double p5 = double.tryParse(values[1]) ?? 0;
-      double ph = double.tryParse(values[2]) ?? 0;
-
-      PressureData pressure = PressureData(p1: p1, p5: p5, heel: ph);
-
-      if (role == SensorRole.leftFoot) {
-        _currentLeftPressure = pressure;
-        print('✓ Left Pressure: P1=$p1, P5=$p5, PH=$ph');
-      } else {
-        _currentRightPressure = pressure;
-        print('✓ Right Pressure: P1=$p1, P5=$p5, PH=$ph');
-      }
-
-      notifyListeners();
-    } catch (e) {
-      print('Pressure parse error: $e');
-    }
-  }
-
-  // ============================================
-  // 录制方法
-  // ============================================
-
-  void startRecording() {
-    if (_isRecording) return;
-
-    _recordBuffer.clear();
-    _isRecording = true;
-
-    // 每 50ms 采样一次（20Hz）
-    _recordTimer = Timer.periodic(Duration(milliseconds: 50), (_) {
-      _createRecord();
-    });
-
-    print('✓ Recording started');
-    notifyListeners();
-  }
-
-  void stopRecording() {
-    _recordTimer?.cancel();
-    _recordTimer = null;
-    _isRecording = false;
-
-    print('✓ Recording stopped (${_recordBuffer.length} records)');
-    notifyListeners();
-  }
-
-  // ============================================
-  // 创建记录
-  // ============================================
-
-  void _createRecord() {
-    // 检查数据完整性
-    if (_currentLeftIMU == null ||
-        _currentRightIMU == null ||
-        _currentLeftPressure == null ||
-        _currentRightPressure == null) {
-      return; // 数据不完整，跳过
-    }
-
-    try {
-      final record = GaitDataRecord(
-        timestamp: DateTime.now().toIso8601String(),
-
-        // 右脚
-        rightP1: _currentRightPressure!.p1,
-        rightP5: _currentRightPressure!.p5,
-        rightPH: _currentRightPressure!.heel,
-        rightAccX: _currentRightIMU!.accX,
-        rightAccY: _currentRightIMU!.accY,
-        rightAccZ: _currentRightIMU!.accZ,
-        rightGyroX: _currentRightIMU!.gyroX,
-        rightGyroY: _currentRightIMU!.gyroY,
-        rightGyroZ: _currentRightIMU!.gyroZ,
-        rightRoll: _currentRightIMU!.roll,
-        rightPitch: _currentRightIMU!.pitch,
-        rightYaw: _currentRightIMU!.yaw,
-
-        // 左脚
-        leftP1: _currentLeftPressure!.p1,
-        leftP5: _currentLeftPressure!.p5,
-        leftPH: _currentLeftPressure!.heel,
-        leftAccX: _currentLeftIMU!.accX,
-        leftAccY: _currentLeftIMU!.accY,
-        leftAccZ: _currentLeftIMU!.accZ,
-        leftGyroX: _currentLeftIMU!.gyroX,
-        leftGyroY: _currentLeftIMU!.gyroY,
-        leftGyroZ: _currentLeftIMU!.gyroZ,
-        leftRoll: _currentLeftIMU!.roll,
-        leftPitch: _currentLeftIMU!.pitch,
-        leftYaw: _currentLeftIMU!.yaw,
-
-        // 标签
-        label: _currentLabel.toString(),
-      );
-
-      _recordBuffer.add(record);
-      notifyListeners();
-    } catch (e) {
-      print('Record creation error: $e');
-    }
-  }
-
-  // ============================================
-  // 导出数据
-  // ============================================
-
-  Future<bool> exportRecords() async {
-    if (_recordBuffer.isEmpty) {
-      print('⚠ No data to export');
-      return false;
-    }
-
-    try {
-      print('Exporting ${_recordBuffer.length} records...');
-      final file = await CSVExportService.exportToCSV(_recordBuffer);
-      _recordBuffer.clear();
-      print('✓ Export successful: ${file.path}');
-      notifyListeners();
-      return true;
-    } catch (e) {
-      print('✗ Export failed: $e');
-      return false;
-    }
-  }
-
-  // ============================================
-  // 辅助方法
-  // ============================================
-
-  void setLabel(int label) {
-    _currentLabel = label;
-    notifyListeners();
-  }
-
-  void printStatus() {
-    print('=== BLE Status ===');
-    print('Left IMU: ${_currentLeftIMU != null ? "✓" : "✗"}');
-    print('Right IMU: ${_currentRightIMU != null ? "✓" : "✗"}');
-    print('Left Pressure: ${_currentLeftPressure != null ? "✓" : "✗"}');
-    print('Right Pressure: ${_currentRightPressure != null ? "✓" : "✗"}');
-    print('Buffer: ${_recordBuffer.length}');
-    print('Recording: ${_isRecording ? "✓" : "✗"}');
-    print('==================');
-  }
+  @override
+  String toString() => 'P1:$p1,P5:$p5,PH:$heel';
 }
 
+/// 惯性测量单元数据 (WT9011DCL 传感器) - 9个数据字段
+class IMUData {
+  // 加速度 (g)
+  final double accX;
+  final double accY;
+  final double accZ;
+
+  // 角速度 (°/s)
+  final double gyroX;
+  final double gyroY;
+  final double gyroZ;
+
+  // 欧拉角 (°) - Roll, Pitch, Yaw
+  final double roll;
+  final double pitch;
+  final double yaw;
+
+  IMUData({
+    required this.accX,
+    required this.accY,
+    required this.accZ,
+    required this.gyroX,
+    required this.gyroY,
+    required this.gyroZ,
+    required this.roll,
+    required this.pitch,
+    required this.yaw,
+  });
+
+  /// 从维特传感器的蓝牙原始数据解析 (Flag=0x61, 18字节)
+  /// 数据顺序: AXL AXH AYL AYH AZL AZH WXL WXH WYL WYH WZL WZH RollL RollH PitchL PitchH YawL YawH
+  static IMUData parseFromFrame(List<int> frame) {
+    if (frame.length < 18) {
+      throw Exception('Invalid IMU frame length: ${frame.length}');
+    }
+
+    // 辅助函数：16位有符号整数转换
+    int toShort(int low, int high) {
+      int value = ((high & 0xFF) << 8) | (low & 0xFF);
+      if (value & 0x8000 != 0) {
+        value = value - 0x10000;
+      }
+      return value;
+    }
+
+    // 解析加速度 (g): value/32768*16g
+    double accX = toShort(frame[0], frame[1]) / 32768.0 * 16.0;
+    double accY = toShort(frame[2], frame[3]) / 32768.0 * 16.0;
+    double accZ = toShort(frame[4], frame[5]) / 32768.0 * 16.0;
+
+    // 解析角速度 (°/s): value/32768*2000(°/s)
+    double gyroX = toShort(frame[6], frame[7]) / 32768.0 * 2000.0;
+    double gyroY = toShort(frame[8], frame[9]) / 32768.0 * 2000.0;
+    double gyroZ = toShort(frame[10], frame[11]) / 32768.0 * 2000.0;
+
+    // 解析欧拉角 (°): value/32768*180(°)
+    double roll = toShort(frame[12], frame[13]) / 32768.0 * 180.0;
+    double pitch = toShort(frame[14], frame[15]) / 32768.0 * 180.0;
+    double yaw = toShort(frame[16], frame[17]) / 32768.0 * 180.0;
+
+    return IMUData(
+      accX: accX,
+      accY: accY,
+      accZ: accZ,
+      gyroX: gyroX,
+      gyroY: gyroY,
+      gyroZ: gyroZ,
+      roll: roll,
+      pitch: pitch,
+      yaw: yaw,
+    );
+  }
+
+  @override
+  String toString() => 
+      'A:($accX,$accY,$accZ) G:($gyroX,$gyroY,$gyroZ) E:($roll,$pitch,$yaw)';
+}
+
+/// BLE 设备信息
+class BLEDevice {
+  final String id;
+  final String name;
+  final SensorRole role;
+  final int rssi;
+
+  BLEDevice({
+    required this.id,
+    required this.name,
+    required this.role,
+    required this.rssi,
+  });
+
+  @override
+  String toString() => '$name ($role) - RSSI: $rssi';
+}
+
+/// 传感器角色
 enum SensorRole { leftFoot, rightFoot, unknown }
+
+/// 连接状态
+enum ConnectionStatus { disconnected, connecting, connected, error }
+
+/// 步态数据记录 - 26 列 CSV 格式
+/// 结构: timestamp | rightP1 rightP5 rightPH rightAcc(3) rightGyro(3) rightAngle(3) | 
+///                  leftP1 leftP5 leftPH leftAcc(3) leftGyro(3) leftAngle(3) | label
+class GaitDataRecord {
+  final String timestamp;
+  
+  // 右脚: 3个压力 + 9个惯性 = 12个
+  final double rightP1;
+  final double rightP5;
+  final double rightPH;
+  final double rightAccX;
+  final double rightAccY;
+  final double rightAccZ;
+  final double rightGyroX;
+  final double rightGyroY;
+  final double rightGyroZ;
+  final double rightRoll;
+  final double rightPitch;
+  final double rightYaw;
+  
+  // 左脚: 3个压力 + 9个惯性 = 12个
+  final double leftP1;
+  final double leftP5;
+  final double leftPH;
+  final double leftAccX;
+  final double leftAccY;
+  final double leftAccZ;
+  final double leftGyroX;
+  final double leftGyroY;
+  final double leftGyroZ;
+  final double leftRoll;
+  final double leftPitch;
+  final double leftYaw;
+  
+  // 标签
+  final String label;
+
+  GaitDataRecord({
+    required this.timestamp,
+    required this.rightP1,
+    required this.rightP5,
+    required this.rightPH,
+    required this.rightAccX,
+    required this.rightAccY,
+    required this.rightAccZ,
+    required this.rightGyroX,
+    required this.rightGyroY,
+    required this.rightGyroZ,
+    required this.rightRoll,
+    required this.rightPitch,
+    required this.rightYaw,
+    required this.leftP1,
+    required this.leftP5,
+    required this.leftPH,
+    required this.leftAccX,
+    required this.leftAccY,
+    required this.leftAccZ,
+    required this.leftGyroX,
+    required this.leftGyroY,
+    required this.leftGyroZ,
+    required this.leftRoll,
+    required this.leftPitch,
+    required this.leftYaw,
+    required this.label,
+  });
+
+  /// 转换为 CSV 行 (26 列)
+  String toCSVRow() {
+    return [
+      timestamp,
+      // 右脚 (12列)
+      rightP1, rightP5, rightPH,
+      rightAccX, rightAccY, rightAccZ,
+      rightGyroX, rightGyroY, rightGyroZ,
+      rightRoll, rightPitch, rightYaw,
+      // 左脚 (12列)
+      leftP1, leftP5, leftPH,
+      leftAccX, leftAccY, leftAccZ,
+      leftGyroX, leftGyroY, leftGyroZ,
+      leftRoll, leftPitch, leftYaw,
+      // 标签
+      label,
+    ]
+    .map((v) => _formatValue(v))
+    .join(',');
+  }
+
+  /// 格式化值（避免科学计数法）
+  static String _formatValue(dynamic value) {
+    if (value is double) {
+      return value.toStringAsFixed(6).replaceAll(RegExp(r'0+$'), '').replaceAll(RegExp(r'\.$'), '');
+    }
+    return value.toString();
+  }
+
+  /// CSV 表头 (26 列)
+  static String getCSVHeader() {
+    return [
+      'timestamp',
+      // 右脚
+      'rightP1', 'rightP5', 'rightPH',
+      'rightAccX', 'rightAccY', 'rightAccZ',
+      'rightGyroX', 'rightGyroY', 'rightGyroZ',
+      'rightRoll', 'rightPitch', 'rightYaw',
+      // 左脚
+      'leftP1', 'leftP5', 'leftPH',
+      'leftAccX', 'leftAccY', 'leftAccZ',
+      'leftGyroX', 'leftGyroY', 'leftGyroZ',
+      'leftRoll', 'leftPitch', 'leftYaw',
+      // 标签
+      'label',
+    ].join(',');
+  }
+}
